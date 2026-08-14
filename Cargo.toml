@@ -12,13 +12,16 @@ dsh-core = { path = "crates/dsh-core" }
 dsh-invariants = { path = "crates/dsh-invariants" }
 dsh-llm = { path = "crates/dsh-llm" }
 dsh-llm-mock = { path = "crates/dsh-llm-mock" }
+dsh-llm-opencode = { path = "crates/dsh-llm-opencode" }
 dsh-loader = { path = "crates/dsh-loader" }
+dsh-memory = { path = "crates/dsh-memory" }
 dsh-session = { path = "crates/dsh-session" }
 dsh-shell = { path = "crates/dsh-shell" }
 dsh-system-prompt = { path = "crates/dsh-system-prompt" }
 dsh-tools = { path = "crates/dsh-tools" }
 plugin-bash = { path = "plugins/plugin-bash" }
 plugin-demo = { path = "plugins/plugin-demo" }
+plugin-memory = { path = "plugins/plugin-memory" }
 plugin-todo = { path = "plugins/plugin-todo" }
 futures.workspace = true
 serde_json.workspace = true

@@ -223,8 +223,13 @@ fn new_topic_id() -> String {
 }
 
 impl MemoryStore {
-    /// 打开（或创建）存储。
+    /// 打开（或创建）存储；父目录不存在时自动创建。
     pub fn open(path: &str, llm: Arc<dyn LlmAdapter>) -> Result<Self> {
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
         let store = Self {

@@ -10,7 +10,7 @@ Rust 复刻 dsh 的插件化主干："一切皆插件" —— Context 服务仓�
 ## 布局
 
 ```text
-crates/   # 核心与接缝 crate（dsh-core、dsh-loader、dsh-session、dsh-llm、dsh-memory、…）
+crates/   # 核心与接缝 crate（dsh-core、dsh-loader、dsh-session、dsh-llm、dsh-llm-opencode、dsh-memory、…）
 plugins/  # A 形态插件（plugin-todo、plugin-bash、plugin-demo、plugin-memory）
 src/      # cos CLI 宿主（P6 前为占位二进制）
 ```
@@ -48,5 +48,11 @@ cargo deny check   # CI 内执行（本地需 cargo-deny）
   提取→编号消解→合并、遗忘曲线/唤醒、四工具 remember/recall/inventory/demote）+ `plugins/plugin-memory`
   （提供 `memory` 服务 + 注册四工具）；脚本化 mock 生命周期验收 8 测试（新建/别名合并/保守新建/
   correct 取代/衰减与复活/诚实出口/重开持久化/工具），workspace 94 测试全绿
-- M2：接 agent 读/写路径（turn 挂钩、关系卡常驻注入、pre-step 主动 recall、真实 LLM 适配器）
-- M3：上下文自动压缩 + 会话末 digest（慢路径）+ 自我认知/个性浮现
+- M2：接 agent 读/写路径 + 真实 LLM ✅ —— `agent/pre-step` 挂钩（每 turn 第一步消化上一 turn，
+  记忆失败不阻塞对话）+ `agent/request` 挂钩（Mode A 主动 recall / Mode B 最近聊过 / 关系卡常驻
+  注入 system）；`crates/dsh-llm-opencode`（OpenAI 兼容适配器：流式 SSE 优先、服务端失败自动非流式
+  兜底）；cos CLI `--llm-base-url/--llm-model/--llm-api-key`（或 `COS_LLM_*` 环境变量）启用真实
+  LLM（openecode zen：`https://opencode.ai/zen/v1`，免费模型 `deepseek-v4-flash-free` 实测可用）；
+  `examples/memory.yml` 演示清单；mock 双脚本验收 + 本地回环 SSE 5 测试；实端点冒烟通过（75 事件、
+  不变量全过、逆序卸载）
+- M3：上下文自动压缩 + 会话末 digest（慢路径）+ 自我认知/个性浮现（待推进）

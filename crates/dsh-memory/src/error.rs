@@ -14,6 +14,9 @@ pub enum MemoryError {
     /// LLM 失败。
     #[error("记忆 LLM 失败: {0}")]
     Llm(#[from] dsh_llm::LlmError),
+    /// I/O 失败（建目录等）。
+    #[error("记忆 I/O 失败: {0}")]
+    Io(#[from] std::io::Error),
     /// 输出不符合契约。
     #[error("记忆输出无效: {0}")]
     Invalid(String),

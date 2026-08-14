@@ -1,11 +1,13 @@
 //! cos CLI 入口（P6）：
 //! `cos --config <cordis.yml> [--dump-config] [--session <id>] [--prompt <text>] [--no-save]`。
 //! Ctrl-C → 取消活动 turn → 优雅退出（全插件逆序卸载）。
+//! M2：`--llm-base-url/--llm-model/--llm-api-key`（或环境变量
+//! `COS_LLM_BASE_URL/COS_LLM_MODEL/COS_LLM_API_KEY`）启用真实 LLM；缺省为确定性 mock。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cos::{RunConfig, run};
+use cos::{LlmConfig, RunConfig, run};
 
 struct Args {
     config_path: String,
@@ -13,9 +15,15 @@ struct Args {
     session_id: String,
     prompt: String,
     session_path: Option<String>,
+    llm: Option<LlmConfig>,
 }
 
-const USAGE: &str = "用法: cos --config <cordis.yml> [--dump-config] [--session <id>] [--prompt <text>] [--no-save]";
+const USAGE: &str = "用法: cos --config <cordis.yml> [--dump-config] [--session <id>] [--prompt <text>] [--no-save] \
+[--llm-base-url <url> --llm-model <model> --llm-api-key <key>]";
+
+fn env_or(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
@@ -25,7 +33,11 @@ fn parse_args() -> Result<Args, String> {
         session_id: "demo".into(),
         prompt: "帮我记一条演示 todo".into(),
         session_path: Some("sessions/demo.jsonl".into()),
+        llm: None,
     };
+    let mut llm_base_url = env_or("COS_LLM_BASE_URL");
+    let mut llm_model = env_or("COS_LLM_MODEL");
+    let mut llm_api_key = env_or("COS_LLM_API_KEY");
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -39,11 +51,33 @@ fn parse_args() -> Result<Args, String> {
                 parsed.prompt = args.next().ok_or("--prompt 需要文本")?;
             }
             "--no-save" => parsed.session_path = None,
+            "--llm-base-url" => {
+                llm_base_url = Some(args.next().ok_or("--llm-base-url 需要 url")?);
+            }
+            "--llm-model" => {
+                llm_model = Some(args.next().ok_or("--llm-model 需要模型名")?);
+            }
+            "--llm-api-key" => {
+                llm_api_key = Some(args.next().ok_or("--llm-api-key 需要 key")?);
+            }
             "--help" | "-h" => {
                 println!("{USAGE}");
                 std::process::exit(0);
             }
             other => return Err(format!("未知参数: {other}")),
+        }
+    }
+    match (llm_base_url, llm_model, llm_api_key) {
+        (Some(base_url), Some(model), Some(api_key)) => {
+            parsed.llm = Some(LlmConfig {
+                base_url,
+                api_key,
+                model,
+            });
+        }
+        (None, None, None) => {}
+        _ => {
+            return Err("--llm-* 三个参数必须同时提供（或同时用环境变量）".to_string());
         }
     }
     Ok(parsed)
@@ -75,6 +109,7 @@ async fn main() {
         prompt: args.prompt,
         session_path: args.session_path,
         cancel: Some(cancel),
+        llm: args.llm,
     })
     .await
     {

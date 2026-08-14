@@ -3,10 +3,12 @@ name = "plugin-memory"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "记忆插件接线：服务提供 + 四工具（remember/recall/inventory/demote，M1）"
+description = "记忆插件接线：服务提供 + 四工具 + agent 读/写挂钩（M1/M2）"
 
 [dependencies]
+dsh-agent = { path = "../../crates/dsh-agent" }
 dsh-core = { path = "../../crates/dsh-core" }
+dsh-llm = { path = "../../crates/dsh-llm" }
 dsh-loader = { path = "../../crates/dsh-loader" }
 dsh-memory = { path = "../../crates/dsh-memory" }
 dsh-session = { path = "../../crates/dsh-session" }
@@ -17,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-dsh-llm = { path = "../../crates/dsh-llm" }
 dsh-llm-mock = { path = "../../crates/dsh-llm-mock" }
+dsh-agent-loop = { path = "../../crates/dsh-agent-loop" }
+dsh-system-prompt = { path = "../../crates/dsh-system-prompt" }
 tokio.workspace = true

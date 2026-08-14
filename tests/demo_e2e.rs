@@ -11,6 +11,7 @@ fn demo_config() -> RunConfig {
         prompt: "帮我记一条演示 todo".into(),
         session_path: None,
         cancel: None,
+        llm: None,
     }
 }
 

@@ -1,17 +1,23 @@
-//! plugin-memory —— 记忆插件接线（M1）：打开存储、提供 `memory` 服务、注册四工具。
+//! plugin-memory —— 记忆插件接线（M1/M2）：打开存储、提供 `memory` 服务、注册四工具，
+//! 并挂 agent 读/写路径：
+//! - 写（`agent/pre-step`，step 1）：把上一 turn 消化进记忆（apply_turn，非阻塞错误）；
+//! - 读（`agent/request`）：Mode A 主动 recall + Mode B 最近聊过 + 关系卡常驻注入 system。
 //!
-//! M2 将接 agent 读/写路径（turn 挂钩、关系卡常驻注入、pre-step 主动 recall）。
-//! 接缝纪律：只依赖 Definition crate（dsh-memory / dsh-tools / dsh-core / dsh-session）。
+//! 接缝纪律：只依赖 Definition crate（dsh-memory / dsh-tools / dsh-core / dsh-session /
+//! dsh-agent / dsh-llm），不依赖 Provider 或 dsh-agent-loop。
 
 #![warn(missing_docs)]
 
 use std::sync::Arc;
 
-use dsh_core::{Context, CoreError, Plugin, Validate};
+use dsh_agent::{PreStepDecision, PreStepPayload, current_initiator};
+use dsh_core::{Context, CoreError, CoreResult, EffectHandle, Plugin, Validate};
+use dsh_llm::{LlmRequest, Message};
 use dsh_memory::{
-    MemoryHit, MemoryLlmProvider, MemoryStore, demote_topic, inventory_topics, recall_memories,
-    remember_fact,
+    MemoryHit, MemoryLlmProvider, MemoryStore, demote_topic, inventory_topics, now_ms,
+    recall_memories, remember_fact, turn_pair_from_text,
 };
+use dsh_session::SessionEventData;
 use dsh_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -288,7 +294,156 @@ fn format_hits(hits: &[MemoryHit]) -> serde_json::Value {
     })
 }
 
-/// 插件主体（apply 时打开存储 + 注册四工具）。
+/// 写挂钩（M2）：`agent/pre-step`，每 turn 第一步进入前消化上一 turn（会话 → 记忆）。
+///
+/// 记忆失败不阻塞对话（陪伴优先）：错误只落 stderr；记忆是尽力而为的旁路。
+fn register_write_hook(ctx: &Context, store: Arc<MemoryStore>) -> CoreResult<EffectHandle> {
+    ctx.on_waterfall::<PreStepPayload, PreStepDecision>("agent/pre-step", move |d| {
+        let store = store.clone();
+        Box::pin(async move {
+            let payload = d.value().clone();
+            let decision = d.next().await;
+            if payload.turn > 1 && payload.step == 1 {
+                let previous = payload.turn - 1;
+                let Some(session) = current_initiator().map(|agent| agent.session().clone()) else {
+                    return decision;
+                };
+                let (user, assistant) = turn_text(&session, previous);
+                if (!user.is_empty() || !assistant.is_empty())
+                    && let Err(error) = store
+                        .apply_turn(&turn_pair_from_text(user, assistant), now_ms())
+                        .await
+                {
+                    eprintln!("[memory] 消化 turn {previous} 失败: {error}");
+                }
+            }
+            decision
+        })
+    })
+}
+
+/// 读挂钩（M2）：`agent/request`，把记忆段注入 system：
+/// Mode A 命中 → 相关记忆；否则 Mode B 最近聊过；关系卡常驻。
+fn register_read_hook(ctx: &Context, store: Arc<MemoryStore>) -> CoreResult<EffectHandle> {
+    ctx.on_waterfall::<LlmRequest, LlmRequest>("agent/request", move |d| {
+        let query = last_user_text(d.value());
+        let store = store.clone();
+        Box::pin(async move {
+            let mut request = d.next().await;
+            if let Some(section) = build_memory_section(&store, query.as_deref()).await {
+                request.system = Some(match request.system {
+                    Some(original) => format!("{section}\n\n{original}"),
+                    None => section,
+                });
+            }
+            request
+        })
+    })
+}
+
+/// 请求里最后一条用户消息文本（recall 查询）。
+fn last_user_text(request: &LlmRequest) -> Option<String> {
+    request
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::User(user) => Some(user.content.clone()),
+            _ => None,
+        })
+}
+
+/// 从会话日志重建某 turn 的用户/助手文本（记忆写路径投影）。
+fn turn_text(session: &dsh_session::Session, turn: u32) -> (String, String) {
+    let mut user = String::new();
+    let mut assistant = String::new();
+    let mut current = 0u32;
+    for event in session.events() {
+        match &event.data {
+            SessionEventData::TurnStart { turn: t } => current = *t,
+            SessionEventData::UserMessage(message) if current == turn => {
+                if !user.is_empty() {
+                    user.push('\n');
+                }
+                user.push_str(&message.content);
+            }
+            SessionEventData::AssistantMessage {
+                turn: t, message, ..
+            } if *t == turn => {
+                let text = message.text();
+                if !text.is_empty() {
+                    if !assistant.is_empty() {
+                        assistant.push('\n');
+                    }
+                    assistant.push_str(&text);
+                }
+            }
+            _ => {}
+        }
+    }
+    (user, assistant)
+}
+
+/// 组装注入的记忆段；无内容 → `None`（不打扰请求）。
+async fn build_memory_section(store: &MemoryStore, query: Option<&str>) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Mode A：主动 recall（命中即唤醒）
+    let mut mode_a_hit = false;
+    if let Some(query) = query
+        && let Ok(outcome) = recall_memories(store, query, 3).await
+        && !outcome.none
+    {
+        mode_a_hit = true;
+        lines.push("【相关记忆】".to_string());
+        for hit in &outcome.hits {
+            lines.push(format!(
+                "- {}：{}（{}，{} 次）",
+                hit.canonical_name, hit.state_summary, hit.when, hit.n_times
+            ));
+        }
+    }
+
+    // Mode B 燃料：最近聊过（无 Mode A 命中时兜底）
+    if !mode_a_hit
+        && let Ok(feed) = store.recent_feed(3, now_ms())
+        && !feed.recent.is_empty()
+    {
+        lines.push("【最近聊过】".to_string());
+        for hit in feed.recent.iter().take(3) {
+            lines.push(format!(
+                "- {}：{}（{}）",
+                hit.canonical_name, hit.state_summary, hit.when
+            ));
+        }
+    }
+
+    // 关系卡：常驻注入（有内容时）
+    if let Ok(card) = store.card() {
+        let mut card_lines: Vec<String> = Vec::new();
+        if !card.profile.is_empty() {
+            card_lines.push(format!("关于你：{}", card.profile));
+        }
+        if !card.agent_model.is_empty() {
+            card_lines.push(format!("关于我：{}", card.agent_model));
+        }
+        if !card.relationship.is_empty() {
+            card_lines.push(format!("我们之间：{}", card.relationship));
+        }
+        if !card_lines.is_empty() {
+            lines.push("【关系卡】".to_string());
+            lines.extend(card_lines);
+        }
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+/// 插件主体（apply 时打开存储 + 注册四工具 + 挂 agent 读/写挂钩）。
 #[derive(Default)]
 pub struct MemoryPlugin;
 
@@ -315,6 +470,12 @@ impl Plugin for MemoryPlugin {
         registry.register(Arc::new(RememberTool))?;
         registry.register(Arc::new(InventoryTool))?;
         registry.register(Arc::new(DemoteTool))?;
+        // M2：agent 读/写挂钩（随 fiber 卸载自动失效）
+        let store = ctx
+            .get::<MemoryStore>()
+            .map_err(|_| CoreError::ServiceNotFound("memory"))?;
+        register_write_hook(ctx, store.clone())?;
+        register_read_hook(ctx, store)?;
         Ok(())
     }
 }

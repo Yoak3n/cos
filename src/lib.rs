@@ -15,7 +15,9 @@ use dsh_core::{Context, Plugin};
 use dsh_invariants::{InvariantRegistry, register_defaults};
 use dsh_llm::{ChunkDelta, LlmAdapter, Message, StreamChunk, ToolCall, UserMessage};
 use dsh_llm_mock::{MockAdapter, MockReply};
+use dsh_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use dsh_loader::{self as loader, Profile};
+use dsh_memory::MemoryLlmProvider;
 use dsh_session::{
     AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, load_jsonl, save_jsonl,
 };
@@ -39,6 +41,19 @@ pub struct RunConfig {
     pub session_path: Option<String>,
     /// 外部取消信号（main 的 Ctrl-C 监视任务写入）。
     pub cancel: Option<Arc<AtomicBool>>,
+    /// 真实 LLM 配置（None = 确定性 mock 演示链路）。
+    pub llm: Option<LlmConfig>,
+}
+
+/// 真实 LLM 配置（opencode-go 等 OpenAI 兼容端点）。
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    /// base URL（不带 `/chat/completions` 后缀）。
+    pub base_url: String,
+    /// API key。
+    pub api_key: String,
+    /// 模型 id。
+    pub model: String,
 }
 
 /// 运行报告（测试与 CLI 打印消费）。
@@ -101,17 +116,18 @@ fn demo_script() -> Vec<MockReply> {
 
 /// 内置插件的插件 id —— 同时是对插件 crate 的显式引用锚点：
 /// 保证其 inventory 静态注册表被链接进 cos 可执行文件。
-pub fn builtin_plugin_ids() -> [&'static str; 3] {
+pub fn builtin_plugin_ids() -> [&'static str; 4] {
     [
         plugin_todo::TodoPlugin::ID,
         plugin_bash::BashPlugin::ID,
         plugin_demo::DemoPlugin::ID,
+        plugin_memory::MemoryPlugin::ID,
     ]
 }
 
 /// 运行完整演示链路。
 pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
-    // 锚点：保证三个插件 crate 的 inventory 注册表被链接
+    // 锚点：保证插件 crate 的 inventory 注册表被链接
     let _ = builtin_plugin_ids();
     let root = Context::root();
     // 内置服务（app 装配，先于插件树）
@@ -120,6 +136,16 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     root.provide(InvariantRegistry::new(&root))?;
     provide_local_shell(&root)?;
     root.provide(AgentRegistry::new(&root))?;
+    // 记忆专用 LLM（M2）：真实端点（--llm-*）或空脚本 mock
+    let memory_llm: Arc<dyn LlmAdapter> = match &config.llm {
+        Some(cfg) => Arc::new(OpencodeAdapter::new(OpencodeConfig {
+            base_url: cfg.base_url.clone(),
+            api_key: cfg.api_key.clone(),
+            model: cfg.model.clone(),
+        })),
+        None => Arc::new(MockAdapter::new("memory-mock", vec![])),
+    };
+    root.provide(MemoryLlmProvider { inner: memory_llm })?;
     root.get::<PromptSections>()
         .expect("刚装配")
         .append("persona", "你是 dsh-rust 演示助手，工具结果要如实汇报。");
@@ -144,16 +170,31 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     // 装配插件树
     let app = loader::load(&root, &profile)?;
 
-    // demo agent（确定性 mock 脚本）
-    let adapter: Arc<dyn LlmAdapter> = Arc::new(MockAdapter::new("demo", demo_script()));
+    // demo agent：真实 LLM（--llm-*）或确定性 mock 脚本
+    let (adapter, provider, model) = match &config.llm {
+        Some(cfg) => (
+            Arc::new(OpencodeAdapter::new(OpencodeConfig {
+                base_url: cfg.base_url.clone(),
+                api_key: cfg.api_key.clone(),
+                model: cfg.model.clone(),
+            })) as Arc<dyn LlmAdapter>,
+            Some("opencode".to_string()),
+            Some(cfg.model.clone()),
+        ),
+        None => (
+            Arc::new(MockAdapter::new("demo", demo_script())) as Arc<dyn LlmAdapter>,
+            Some("demo".to_string()),
+            Some("mock".to_string()),
+        ),
+    };
     let agent = root
         .get::<AgentRegistry>()
         .expect("刚装配")
         .create(CreateAgentOptions {
             session_id: config.session_id.clone(),
             options: AgentOptions {
-                provider: Some("demo".into()),
-                model: Some("mock".into()),
+                provider,
+                model,
                 max_tokens: None,
             },
             adapter,
