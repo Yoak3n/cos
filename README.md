@@ -31,7 +31,10 @@ cargo deny check   # CI 内执行（本地需 cargo-deny）
 ## 使用（CLI 三形态）
 
 ```bash
-# 交互式 REPL（一键启动；无 --prompt 时默认）：输入消息持续对话，/exit 退出，Ctrl-C 取消当前回复
+# 零参数一键启动（默认 ./cordis.yml；唯一提供商/ main 链自动使用，无需任何参数）
+cos
+
+# 交互式 REPL（显式指定配置）
 cos --config examples/memory.yml --llm-base-url ... --llm-model ... --llm-api-key ... --llm-no-stream
 
 # stdio JSON-RPC 服务（供外部程序调用；每行一个请求/响应）
@@ -41,6 +44,10 @@ cos --config examples/demo.yml --rpc
 # 一次性（演示/脚本）
 cos --config examples/demo.yml --prompt "帮我记一条演示 todo"
 ```
+
+主 agent 的 LLM 解析优先级：`--agent-llm <id>` > `--llm-*` 的 "default" > yml `main` 链/提供商 >
+yml 唯一提供商 > 确定性演示脚本（回落时 REPL/RPC 会提示）。opencode 提供商 `streaming` 缺省 false
+（该网关流式不稳定）；配置值支持 `${ENV_VAR}` 展开（如 `api_key: "${OPENCODE_API_KEY}"`，密钥不进文件）。
 
 三种形态共用同一装配（`assemble`：内置服务 + LLM 注册表 + 插件树 + 主 agent）与收尾
 （`finish`：不变量校验 + 会话末 digest + JSONL 落盘 + 优雅卸载）；每轮交互经

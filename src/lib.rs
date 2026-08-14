@@ -204,7 +204,8 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
     let app = loader::load(&root, &profile)?;
 
     // 主 agent：LLM 统一管理解析，优先级：
-    // --agent-llm <id> > --llm-* 的 "default" > yml 的 "main"（链或提供商）> 确定性演示脚本
+    // --agent-llm <id> > --llm-* 的 "default" > yml 的 "main"（链或提供商）>
+    // yml 恰好一个非 "default" 提供商 > 确定性演示脚本
     let llm_registry = root.get::<LlmRegistry>().expect("刚装配");
     let (adapter, provider, model, demo_mode) = if let Some(id) = &config.agent_llm {
         let adapter = llm_registry
@@ -234,6 +235,12 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
             Some("main".to_string()),
             false,
         )
+    } else if let Some(only) = single_provider(&llm_registry) {
+        // yml 恰好定义一个非 "default" 提供商 → 自动使用（零参数启动）
+        let adapter = llm_registry
+            .resolve_id(&only)
+            .map_err(|error| AppError::Other(format!("agent LLM '{only}' 不可用: {error}")))?;
+        (adapter, Some("llm-registry".to_string()), Some(only), false)
     } else {
         (
             Arc::new(MockAdapter::new("demo", demo_script())) as Arc<dyn LlmAdapter>,
@@ -287,6 +294,20 @@ pub async fn run_turn(
         None => agent.when_idle().await,
     }
     summarize_turn(agent.session(), before_turn + 1, cancelled)
+}
+
+/// 注册表中恰好一个非 "default" 提供商 → 返回其 id（零参数自动使用）。
+fn single_provider(registry: &LlmRegistry) -> Option<String> {
+    let mut candidates = registry
+        .list()
+        .into_iter()
+        .filter(|(id, _)| id != "default")
+        .map(|(id, _)| id);
+    let only = candidates.next()?;
+    if candidates.next().is_some() {
+        return None; // 多于一个 → 不自动选（避免猜错意图）
+    }
+    Some(only)
 }
 
 /// 会话里最后一个 turn 号（0 = 空会话）。

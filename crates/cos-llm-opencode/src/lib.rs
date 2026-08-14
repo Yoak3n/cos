@@ -39,7 +39,8 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
         input_content: Vec<InputContent>,
     }
     fn default_streaming() -> bool {
-        true
+        // opencode zen/go 网关流式不稳定（500 / 只出推理文本），默认非流式最稳
+        false
     }
     let config: ProviderConfig = serde_json::from_value(config.clone())
         .map_err(|error| LlmError::Failure(format!("opencode 提供商配置无效: {error}")))?;

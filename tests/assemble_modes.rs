@@ -70,3 +70,40 @@ async fn agent_llm_explicit_wins_over_main() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[tokio::test]
+async fn single_provider_is_auto_used_without_chain() {
+    // 用户场景：yml 只定义一个提供商、无链 → 自动使用（零参数启动）
+    let path = std::env::temp_dir().join(format!("cos-assemble-single-{}.yml", std::process::id()));
+    std::fs::write(
+        &path,
+        "- name: llm\n  config:\n    providers:\n      - { id: opencode-go, kind: mock, config: {} }\n",
+    )
+    .unwrap();
+    let config = base_config(path.to_string_lossy().into_owned());
+    let assembled = assemble(&config).await.unwrap();
+    assert!(!assembled.demo_mode, "唯一提供商应自动使用");
+    assert_eq!(
+        assembled.agent.options().model.as_deref(),
+        Some("opencode-go")
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn multiple_providers_without_chain_fall_back_to_demo() {
+    let path = std::env::temp_dir().join(format!("cos-assemble-multi-{}.yml", std::process::id()));
+    std::fs::write(
+        &path,
+        "- name: llm\n  config:\n    providers:\n      - { id: m1, kind: mock, config: {} }\n\
+         \x20     - { id: m2, kind: mock, config: {} }\n",
+    )
+    .unwrap();
+    let config = base_config(path.to_string_lossy().into_owned());
+    let assembled = assemble(&config).await.unwrap();
+    assert!(
+        assembled.demo_mode,
+        "多提供商无链 → 不自动猜，回落演示脚本（提示用 --agent-llm）"
+    );
+    let _ = std::fs::remove_file(&path);
+}

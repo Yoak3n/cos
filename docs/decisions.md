@@ -156,3 +156,9 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   Ctrl-C 语义：一次性 = 取消后退出；REPL = 回复中取消当前 turn 回提示符（消费信号位）、
   提示符处退出；RPC = 取消进行中的 chat、空闲时退出。e2e：spawn 真实二进制走管道协议
   （`tests/rpc_e2e.rs`，demo mock 确定性脚本）。
+- **零参数启动**：`--config` 缺省 `./cordis.yml`；主 agent LLM 解析优先级
+  `--agent-llm` > `--llm-*` 的 "default" > yml `main`（链或提供商）> **yml 恰好一个非 default
+  提供商**（不猜多个）> 确定性演示脚本（`demo_mode` 标记，REPL 横幅 / RPC stderr 提示）。
+  opencode 工厂 `streaming` 缺省 **false**（该网关流式不稳定）；plugin-llm 配置支持
+  `${ENV_VAR}` 展开（`api_key: "${OPENCODE_API_KEY}"`，缺失 fail loud），密钥不进文件。
+  个人 `cordis.yml`（含真实密钥）入 .gitignore。

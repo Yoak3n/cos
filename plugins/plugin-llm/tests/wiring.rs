@@ -71,6 +71,47 @@ fn apply_fails_loud_on_unknown_kind() {
 }
 
 #[test]
+fn apply_expands_env_vars_in_provider_config() {
+    // Rust 2024：set_var 为 unsafe（进程级副作用，测试内使用）
+    unsafe { std::env::set_var("COS_TEST_LLM_KEY", "sk-test-env") };
+    let ctx = Context::root();
+    ctx.provide(LlmRegistry::new(&ctx)).unwrap();
+    LlmPlugin
+        .apply(
+            &ctx,
+            &LlmConfig {
+                providers: vec![ProviderEntry {
+                    id: "env-provider".into(),
+                    kind: "mock".into(),
+                    config: json!({ "note": "${COS_TEST_LLM_KEY}" }),
+                }],
+                chains: vec![],
+            },
+        )
+        .unwrap();
+    assert!(
+        ctx.get::<LlmRegistry>()
+            .unwrap()
+            .get("env-provider")
+            .is_some()
+    );
+
+    // 缺失环境变量 → fail loud
+    let bad = LlmConfig {
+        providers: vec![ProviderEntry {
+            id: "bad".into(),
+            kind: "mock".into(),
+            config: json!({ "note": "${COS_TEST_MISSING_VAR}" }),
+        }],
+        chains: vec![],
+    };
+    let result = LlmPlugin.apply(&ctx, &bad);
+    assert!(result.is_err(), "引用了未设置的环境变量必须 fail loud");
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("COS_TEST_MISSING_VAR"), "{message}");
+}
+
+#[test]
 fn apply_fails_loud_on_duplicate_and_unknown_chain_ref() {
     let ctx = Context::root();
     ctx.provide(LlmRegistry::new(&ctx)).unwrap();

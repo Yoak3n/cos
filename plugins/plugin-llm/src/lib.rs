@@ -16,6 +16,7 @@
 //! ```
 //! `kind` 由各 Provider crate 经 `cos_llm::llm_factory!` 注册（opencode/mock/…）；
 //! 后备链 `providers` 主在前，主在产出任何 chunk 前失败自动切下一个（`FallbackAdapter`）。
+//! 配置值支持 `${ENV_VAR}` 展开（api_key 等可放环境变量，密钥不进文件）。
 //!
 //! 装配纪律：宿主先提供空 `LlmRegistry`（服务 `"llm"`），本插件按配置填充；
 //! 消费者（记忆插件、agent 创建）按 id / 链 id 解析。**条目顺序重要**：本插件须在
@@ -76,8 +77,11 @@ impl Plugin for LlmPlugin {
             .get::<LlmRegistry>()
             .map_err(|_| CoreError::ServiceNotFound("llm"))?;
         for provider in &config.providers {
+            // ${ENV_VAR} 展开（api_key 等可放环境变量，密钥不进配置文件）
+            let mut provider_config = provider.config.clone();
+            expand_env(&mut provider_config).map_err(CoreError::Other)?;
             let adapter = registry
-                .build(&provider.kind, &provider.config)
+                .build(&provider.kind, &provider_config)
                 .map_err(|error| CoreError::Other(error.to_string()))?;
             registry.register(provider.id.clone(), adapter)?;
         }
@@ -85,6 +89,36 @@ impl Plugin for LlmPlugin {
             registry.register_chain(chain.id.clone(), chain.providers.clone())?;
         }
         Ok(())
+    }
+}
+
+/// 把配置值里的 `${ENV_VAR}` 展开为环境变量（缺失 → fail loud）。
+fn expand_env(config: &mut serde_json::Value) -> Result<(), String> {
+    match config {
+        serde_json::Value::String(value) => {
+            if let Some(rest) = value
+                .strip_prefix("${")
+                .and_then(|rest| rest.strip_suffix('}'))
+            {
+                let resolved = std::env::var(rest)
+                    .map_err(|_| format!("环境变量 {rest} 未设置（引用处: {value}）"))?;
+                *value = resolved;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                expand_env(item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                expand_env(item)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
