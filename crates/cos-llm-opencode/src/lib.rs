@@ -10,8 +10,9 @@
 //! `{"type":"error",…}` 块），自动退化为非流式单次请求（`choices[0].message.content` +
 //! usage 合成一个 chunk）——兼容流式暂不可用的网关（实测 opencode zen/go 流式不稳定）。
 //! 4xx（鉴权/余额）不重试，原样报错。工具调用：流式按 `index` 累积 `delta.tool_calls`
-//! 分片、流尾合成 [`ToolCall`]；非流式直接解析 `message.tool_calls`。推理模型只流
-//! `reasoning_content` 时兜底输出思考文本（有工具调用时不兜底思考）。
+//! 分片、流尾合成 [`ToolCall`]；非流式直接解析 `message.tool_calls`。推理内容
+//! （`reasoning_content`）作为独立的 Thinking 增量流式转发，与正文（Text）分开，
+//! 由消费方决定是否展示——不再混入文本、也不再丢弃。
 //!
 //! LLM 统一管理：本 crate 经 `llm_factory!("opencode", build_opencode)` 注册提供商工厂。
 
@@ -246,7 +247,7 @@ impl OpencodeAdapter {
                                     "arguments": call.arguments,
                                 },
                             })),
-                            ContentBlock::Text { .. } => None,
+                            ContentBlock::Text { .. } | ContentBlock::Thinking { .. } => None,
                         })
                         .collect();
                     let text = assistant.text();
@@ -417,9 +418,6 @@ async fn stream_once(
     let mut buffer = String::new();
     let mut finished = false;
     let mut eof = false;
-    // 推理文本缓冲：content 一出现即丢弃；仅当全程无 content 才在流尾回退输出
-    let mut reasoning_buf = String::new();
-    let mut saw_content = false;
     // 工具调用分片：按 index 归组（id/name 取首个片段，arguments 拼接）
     let mut tool_acc: Vec<Option<(String, String, String)>> = Vec::new();
     // 最后见到的 usage（流尾工具块携带）
@@ -491,25 +489,19 @@ async fn stream_once(
                 usage_tail = usage;
             }
             *sent += 1;
-            if text.is_empty() {
-                // 纯推理增量：缓冲；usage 独立成块（消费方跳过空文本）
-                reasoning_buf.push_str(&reasoning);
-                if usage.is_some()
-                    && tx
-                        .send(Ok(StreamChunk {
-                            delta: ChunkDelta::Text {
-                                text: String::new(),
-                            },
-                            usage,
-                        }))
-                        .is_err()
-                {
-                    return Ok(()); // 接收方已丢弃（提前取消）
-                }
-            } else {
-                // content 出现：丢弃已缓冲的推理（回答优先），按 content 流出
-                saw_content = true;
-                reasoning_buf.clear();
+            // 推理与正文分开流式（thinking 一到达即转发，不缓冲不丢弃；
+            // 消费方自行决定展示；usage 独立成块，消费方跳过）
+            if !reasoning.is_empty()
+                && tx
+                    .send(Ok(StreamChunk {
+                        delta: ChunkDelta::Thinking { text: reasoning },
+                        usage: None,
+                    }))
+                    .is_err()
+            {
+                return Ok(()); // 接收方已丢弃（提前取消）
+            }
+            if !text.is_empty() {
                 if tx
                     .send(Ok(StreamChunk {
                         delta: ChunkDelta::Text { text },
@@ -519,6 +511,17 @@ async fn stream_once(
                 {
                     return Ok(()); // 接收方已丢弃（提前取消）
                 }
+            } else if usage.is_some()
+                && tx
+                    .send(Ok(StreamChunk {
+                        delta: ChunkDelta::Text {
+                            text: String::new(),
+                        },
+                        usage,
+                    }))
+                    .is_err()
+            {
+                return Ok(()); // 接收方已丢弃（提前取消）
             }
         } else if eof {
             // EOF：残留无换行尾行（裸 JSON error 体等）补一个换行再处理一次
@@ -539,7 +542,7 @@ async fn stream_once(
             }
         }
     }
-    // 流尾：工具调用分片 → 合成 ToolUse 块（先于思考兜底判定）
+    // 流尾：工具调用分片 → 合成 ToolUse 块
     let tools: Vec<ToolCall> = tool_acc
         .into_iter()
         .flatten()
@@ -559,16 +562,6 @@ async fn stream_once(
             } else {
                 None
             },
-        }));
-    }
-    // 流尾：全程无 content 且无工具调用 → 回退输出缓冲的推理（宁可说出思考，不可空回复）
-    if !saw_content && tools.is_empty() && !reasoning_buf.is_empty() {
-        *sent += 1;
-        let _ = tx.send(Ok(StreamChunk {
-            delta: ChunkDelta::Text {
-                text: std::mem::take(&mut reasoning_buf),
-            },
-            usage: None,
         }));
     }
     Ok(())
@@ -592,11 +585,29 @@ async fn single_shot(
     let raw = response.text().await.map_err(|error| error.to_string())?;
     let completion: Completion =
         serde_json::from_str(&raw).map_err(|error| format!("非流式响应不是合法 JSON: {error}"))?;
-    // 逐 choice 收集：文本块 + 工具调用块（工具调用优先于思考兜底）
+    // 逐 choice 收集：思考块（reasoning_content）+ 文本块 + 工具调用块
+    let mut thinking = String::new();
     let mut text = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut usage = None;
     for choice in &completion.choices {
+        let reasoning = choice
+            .message
+            .reasoning_content
+            .as_deref()
+            .filter(|c| !c.trim().is_empty());
+        if let Some(reasoning) = reasoning {
+            thinking.push_str(reasoning);
+        }
+        // content 优先（空串视同缺失）；缺省时不再把 reasoning 混入文本（走 Thinking 块）
+        let content = choice
+            .message
+            .content
+            .as_deref()
+            .filter(|c| !c.trim().is_empty());
+        if let Some(content) = content {
+            text.push_str(content);
+        }
         for call in &choice.message.tool_calls {
             let name = call.function.name.clone().unwrap_or_default();
             let arguments = call.function.arguments.clone().unwrap_or_default();
@@ -609,24 +620,6 @@ async fn single_shot(
                 arguments,
             });
         }
-        // content 优先（空串视同缺失）；无内容且无工具调用时，推理模型可能把文本放在 reasoning_content
-        let content = choice
-            .message
-            .content
-            .as_deref()
-            .filter(|c| !c.trim().is_empty());
-        if let Some(content) = content {
-            text.push_str(content);
-        } else if tool_calls.is_empty() {
-            let reasoning = choice
-                .message
-                .reasoning_content
-                .as_deref()
-                .filter(|c| !c.trim().is_empty());
-            if let Some(reasoning) = reasoning {
-                text.push_str(reasoning);
-            }
-        }
     }
     if let Some(u) = completion.usage {
         usage = Some(TokenUsage {
@@ -634,22 +627,28 @@ async fn single_shot(
             output_tokens: u.completion_tokens,
         });
     }
+    // 镜像流式顺序：思考 → 文本 → 工具；usage 挂在最后一块
     let mut chunks: Vec<Result<StreamChunk, LlmError>> = Vec::new();
+    if !thinking.is_empty() {
+        chunks.push(Ok(StreamChunk {
+            delta: ChunkDelta::Thinking { text: thinking },
+            usage: None,
+        }));
+    }
     if !text.is_empty() {
         chunks.push(Ok(StreamChunk {
             delta: ChunkDelta::Text { text },
-            usage: if tool_calls.is_empty() { usage } else { None },
+            usage: None,
         }));
     }
-    for (i, call) in tool_calls.iter().enumerate() {
+    for call in tool_calls.iter() {
         chunks.push(Ok(StreamChunk {
             delta: ChunkDelta::ToolUse { call: call.clone() },
-            usage: if i + 1 == tool_calls.len() {
-                usage
-            } else {
-                None
-            },
+            usage: None,
         }));
+    }
+    if let Some(Ok(last)) = chunks.last_mut() {
+        last.usage = usage;
     }
     for chunk in chunks {
         if tx.send(chunk).is_err() {

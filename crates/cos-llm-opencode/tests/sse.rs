@@ -103,7 +103,7 @@ async fn streams_text_and_maps_usage() {
 }
 
 #[tokio::test]
-async fn reasoning_only_stream_falls_back_to_thought_text() {
+async fn reasoning_only_stream_emits_thinking_deltas() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve(
@@ -118,22 +118,23 @@ async fn reasoning_only_stream_falls_back_to_thought_text() {
 
     let adapter = adapter(port);
     let mut stream = adapter.stream(&request());
+    let mut thinking = String::new();
     let mut text = String::new();
     while let Some(item) = stream.next().await {
         let chunk = item.unwrap();
-        if let ChunkDelta::Text { text: delta } = chunk.delta {
-            text.push_str(&delta);
+        match chunk.delta {
+            ChunkDelta::Text { text: delta } => text.push_str(&delta),
+            ChunkDelta::Thinking { text: delta } => thinking.push_str(&delta),
+            ChunkDelta::ToolUse { .. } => {}
         }
     }
     server.await.unwrap();
-    assert_eq!(
-        text, "思考中",
-        "全程无 content 时回退推理文本（宁可说出思考，不可空回复）"
-    );
+    assert_eq!(thinking, "思考中", "推理走独立 Thinking 增量");
+    assert!(text.is_empty(), "无 content → 不应有文本");
 }
 
 #[tokio::test]
-async fn content_drops_buffered_reasoning() {
+async fn thinking_and_content_stream_separately() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve(
@@ -148,15 +149,19 @@ async fn content_drops_buffered_reasoning() {
 
     let adapter = adapter(port);
     let mut stream = adapter.stream(&request());
+    let mut thinking = String::new();
     let mut text = String::new();
     while let Some(item) = stream.next().await {
         let chunk = item.unwrap();
-        if let ChunkDelta::Text { text: delta } = chunk.delta {
-            text.push_str(&delta);
+        match chunk.delta {
+            ChunkDelta::Text { text: delta } => text.push_str(&delta),
+            ChunkDelta::Thinking { text: delta } => thinking.push_str(&delta),
+            ChunkDelta::ToolUse { .. } => {}
         }
     }
     server.await.unwrap();
-    assert_eq!(text, "回答", "content 一出现即丢弃推理缓冲（回答优先）");
+    assert_eq!(thinking, "先想想", "推理与正文分开流式（不丢弃）");
+    assert_eq!(text, "回答");
 }
 
 #[tokio::test]
@@ -352,6 +357,50 @@ async fn image_message_maps_to_image_url_parts() {
     assert!(!adapter.input_content().contains(&InputContent::Image));
 }
 
+/// 非流式响应带推理 + 正文 → 思考块与文本块分开（不再混入、不再丢弃）。
+#[tokio::test]
+async fn non_streaming_thinking_and_content_are_separate_chunks() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+             {\"id\":\"c1\",\"object\":\"chat.completion\",\"model\":\"deepseek-v4-flash-free\",\
+             \"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\
+             \"content\":\"回答正文\",\"reasoning_content\":\"思考过程\"}}],\
+             \"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4}}",
+        ],
+    ));
+
+    let adapter = single_adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut thinking = String::new();
+    let mut text = String::new();
+    let mut usage = None;
+    while let Some(item) = stream.next().await {
+        let chunk = item.unwrap();
+        match chunk.delta {
+            ChunkDelta::Text { text: delta } => text.push_str(&delta),
+            ChunkDelta::Thinking { text: delta } => thinking.push_str(&delta),
+            ChunkDelta::ToolUse { .. } => {}
+        }
+        if chunk.usage.is_some() {
+            usage = chunk.usage;
+        }
+    }
+    server.await.unwrap();
+    assert_eq!(thinking, "思考过程");
+    assert_eq!(text, "回答正文");
+    assert_eq!(
+        usage.unwrap(),
+        TokenUsage {
+            input_tokens: 10,
+            output_tokens: 4
+        }
+    );
+}
+
 /// 非流式响应带工具调用（content 空 + tool_calls —— zen/go 推理模型实测形态）
 /// → 解析为 ToolUse 块（而不是把思考/空串当回复）。
 #[tokio::test]
@@ -377,6 +426,7 @@ async fn non_streaming_tool_call_maps_to_tool_use() {
     while let Some(item) = stream.next().await {
         match item.unwrap().delta {
             ChunkDelta::Text { text: delta } => text.push_str(&delta),
+            ChunkDelta::Thinking { .. } => {}
             ChunkDelta::ToolUse { call } => calls.push(call),
         }
     }
@@ -414,6 +464,7 @@ async fn streaming_tool_call_fragments_are_assembled() {
     while let Some(item) = stream.next().await {
         match item.unwrap().delta {
             ChunkDelta::Text { text: delta } => text.push_str(&delta),
+            ChunkDelta::Thinking { .. } => {}
             ChunkDelta::ToolUse { call } => calls.push(call),
         }
     }

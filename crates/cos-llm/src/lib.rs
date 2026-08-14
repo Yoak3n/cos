@@ -93,6 +93,11 @@ pub enum ContentBlock {
         /// 文本。
         text: String,
     },
+    /// 推理块（reasoning_content；与正文分开流式，客户端可选择性展示）。
+    Thinking {
+        /// 思考文本。
+        text: String,
+    },
     /// 工具调用块。
     ToolUse {
         /// 调用内容。
@@ -113,13 +118,13 @@ impl AssistantMessage {
         Self { content }
     }
 
-    /// 拼接全部文本块（工具调用块跳过）。
+    /// 拼接全部文本块（推理/工具调用块跳过）。
     pub fn text(&self) -> String {
         self.content
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::Text { text } => Some(text.as_str()),
-                ContentBlock::ToolUse { .. } => None,
+                ContentBlock::Thinking { .. } | ContentBlock::ToolUse { .. } => None,
             })
             .collect()
     }
@@ -176,6 +181,11 @@ pub enum ChunkDelta {
     /// 文本增量。
     Text {
         /// 增量文本。
+        text: String,
+    },
+    /// 推理增量（reasoning_content；与正文分开，客户端可选择性展示）。
+    Thinking {
+        /// 思考增量。
         text: String,
     },
     /// 工具调用增量。

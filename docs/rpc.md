@@ -71,14 +71,33 @@ cos --config cordis.yml --rpc [--session <id>] [--no-save]
 |---|---|
 | `agent_start` | turn 开始前发出（cos 近似：一轮 = 一次 run） |
 | `turn_start` / `turn_end` | 带 `turn` 号；`turn_end` 带 `reason`（completed/error/aborted/blocked/…） |
-| `message_start` / `message_update` / `message_end` | assistant 消息生命周期；`message_update.assistantMessageEvent` 含 `text_start`/`text_delta`/`text_end`/`toolcall_start`/`toolcall_end`（含完整 `toolCall`）；`message_end.message` 为准 |
+| `message_start` / `message_update` / `message_end` | assistant 消息生命周期；`message_end.message` 为准 |
 | `tool_execution_start` / `tool_execution_end` | 工具执行（`toolCallId` 关联；`tool_execution_end` 带结果与 `isError`） |
 | `agent_end` / `agent_settled` | 一轮收束（`willRetry: false`） |
 
+`message_update.assistantMessageEvent` 区分推理与正文：`thinking_start` / `thinking_delta` /
+`thinking_end`（`reasoning_content`）、`text_start` / `text_delta` / `text_end`、
+`toolcall_start` / `toolcall_end`（含完整 `toolCall`，适配器在流尾一次性合成）。
+
+**内部拼接**：每条 `message_update` 的 `assistantMessageEvent` 除增量（`delta`）外携带
+`partial` 与 `message`——**已拼接好的累积消息快照**（`content` 按块累积：thinking / text /
+toolCall），客户端直接展示快照即可，无需自行拼增量。快照含元数据：
+`role` / `content` / `api` / `provider` / `model` / `usage`（input/output/totalTokens，
+cost 未核算恒零）/ `stopReason`（流式中 `pending`；`message_end` 为 `stop` 或 `toolUse`）/
+`timestamp`。
+
 ```json
-{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "你好"}}
-{"type": "tool_execution_start", "toolCallId": "call_1", "toolName": "recall", "args": {"query": "咖啡"}}
-```
+{"type": "message_update", "assistantMessageEvent": {
+  "type": "text_delta", "contentIndex": 1, "delta": "你好",
+  "partial": {"role": "assistant", "content": [
+    {"type": "thinking", "thinking": "……", "thinkingSignature": "reasoning_content"},
+    {"type": "text", "text": "你好"}
+  ], "api": "openai-completions", "provider": "opencode-go",
+  "model": "deepseek-v4-flash", "usage": {"input": 0, "output": 0, "cacheRead": 0,
+  "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0,
+  "cacheWrite": 0, "total": 0}}, "stopReason": "pending", "timestamp": 1786706685357},
+  "message": {…同 partial…}
+}}
 
 ## 错误处理
 

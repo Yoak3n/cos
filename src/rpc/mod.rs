@@ -20,13 +20,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cos_agent::AgentStatus;
-use cos_llm::{ChunkDelta, ContentBlock, Message, ToolCall, UserMessage};
-use cos_session::{SessionEventData, TurnEndReason};
+use cos_llm::{ChunkDelta, ContentBlock, Message, TokenUsage, ToolCall, UserMessage};
+use cos_session::{SessionEvent, SessionEventData, TurnEndReason};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::{AppError, Assembled, wait_for_cancel};
+
+mod command;
+use command::Command;
 
 /// 服务循环：读命令行 → 分发 → 写响应行；事件转发器并发流式输出。
 /// EOF 或 `exit` 命令返回；Ctrl-C（cancel 信号）直接返回。
@@ -46,13 +49,16 @@ where
     let forwarder_writer = writer.clone();
     let session = assembled.agent.session().clone();
     let mut seen = session.last_seq();
+    let mut forwarder = EventForwarder::new(
+        assembled.agent.options().provider.clone(),
+        assembled.agent.options().model.clone(),
+    );
     tokio::spawn(async move {
-        let mut forwarder = EventForwarder::default();
         loop {
             let events = session.events_after(seen);
             for event in &events {
                 seen = event.seq;
-                for line in forwarder.on_event(&event.data) {
+                for line in forwarder.on_event(event) {
                     let mut writer = forwarder_writer.lock().await;
                     if writer.write_all(line.as_bytes()).await.is_err()
                         || writer.write_all(b"\n").await.is_err()
@@ -88,12 +94,13 @@ where
             Err(error) => {
                 write_line(
                     &writer,
-                    &json!({
-                        "type": "response",
-                        "command": "parse",
-                        "success": false,
-                        "error": format!("Failed to parse command: {error}"),
-                    }),
+                    &response(
+                        "parse",
+                        None,
+                        false,
+                        None,
+                        Some(format!("Failed to parse command: {error}")),
+                    ),
                 )
                 .await?;
                 continue;
@@ -108,13 +115,13 @@ where
                 .to_string();
             write_line(
                 &writer,
-                &json!({
-                    "id": request.get("id").cloned(),
-                    "type": "response",
-                    "command": unknown,
-                    "success": false,
-                    "error": format!("未知命令: {unknown}"),
-                }),
+                &response(
+                    &unknown,
+                    request.get("id").cloned(),
+                    false,
+                    None,
+                    Some(format!("未知命令: {unknown}")),
+                ),
             )
             .await?;
             continue;
@@ -127,69 +134,30 @@ where
     }
 }
 
-/// RPC 命令（`type` 字段的强类型化；`parse` 之外的字符串一律视为未知命令，
-/// 杜绝手写字符串拼错导致静默分发错误）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Command {
-    /// 发送用户消息（异步接受；处理中须带 streamingBehavior）。
-    Prompt,
-    /// 排队 steering 消息。
-    Steer,
-    /// 排队后续消息。
-    FollowUp,
-    /// 取消队列中指定 id 的待处理消息（cos 扩展）。
-    CancelMessage,
-    /// 中止当前操作（保留排队）。
-    Abort,
-    /// 会话状态。
-    GetState,
-    /// 模型可见消息历史。
-    GetMessages,
-    /// 最后一条助手文本。
-    GetLastAssistantText,
-    /// 会话统计。
-    GetSessionStats,
-    /// 命令清单。
-    GetCommands,
-    /// 退出（cos 扩展）。
-    Exit,
-}
-
-impl Command {
-    /// 从请求的 `type` 字段解析；未知 → None。
-    fn parse(request: &Value) -> Option<Command> {
-        match request.get("type").and_then(Value::as_str) {
-            Some("prompt") => Some(Command::Prompt),
-            Some("steer") => Some(Command::Steer),
-            Some("follow_up") => Some(Command::FollowUp),
-            Some("cancel_message") => Some(Command::CancelMessage),
-            Some("abort") => Some(Command::Abort),
-            Some("get_state") => Some(Command::GetState),
-            Some("get_messages") => Some(Command::GetMessages),
-            Some("get_last_assistant_text") => Some(Command::GetLastAssistantText),
-            Some("get_session_stats") => Some(Command::GetSessionStats),
-            Some("get_commands") => Some(Command::GetCommands),
-            Some("exit") => Some(Command::Exit),
-            _ => None,
-        }
+/// pi 响应信封：`type: response` + `command` + `success` + `data?`/`error?`；
+/// `id` 可选、原样回显（缺省省略该字段）。`dispatch` 与 serve 循环的错误路径共用。
+fn response(
+    command: &str,
+    id: Option<Value>,
+    success: bool,
+    data: Option<Value>,
+    error: Option<String>,
+) -> Value {
+    let mut value = json!({
+        "type": "response",
+        "command": command,
+        "success": success,
+    });
+    if let Some(id) = id {
+        value["id"] = id;
     }
-
-    /// wire 名称（响应 `command` 字段回显）。
-    fn name(self) -> &'static str {
-        match self {
-            Command::Prompt => "prompt",
-            Command::Steer => "steer",
-            Command::FollowUp => "follow_up",
-            Command::CancelMessage => "cancel_message",
-            Command::Abort => "abort",
-            Command::GetState => "get_state",
-            Command::GetMessages => "get_messages",
-            Command::GetLastAssistantText => "get_last_assistant_text",
-            Command::GetSessionStats => "get_session_stats",
-            Command::GetCommands => "get_commands",
-            Command::Exit => "exit",
-        }
+    if let Some(data) = data {
+        value["data"] = data;
     }
+    if let Some(error) = error {
+        value["error"] = json!(error);
+    }
+    value
 }
 
 /// 命令分发：pi 响应信封（`type: response` + `command` + `success` + `data?`/`error?`）。
@@ -201,19 +169,7 @@ fn dispatch(
 ) -> Value {
     let id = request.get("id").cloned();
     let respond = |success: bool, data: Option<Value>, error: Option<String>| {
-        let mut value = json!({
-            "id": id,
-            "type": "response",
-            "command": command.name(),
-            "success": success,
-        });
-        if let Some(data) = data {
-            value["data"] = data;
-        }
-        if let Some(error) = error {
-            value["error"] = json!(error);
-        }
-        value
+        response(command.name(), id.clone(), success, data, error)
     };
     let agent = &assembled.agent;
     match command {
@@ -469,10 +425,15 @@ fn message_to_json(message: &Message) -> Value {
     }
 }
 
-/// 内容块 → pi 风格 JSON。
+/// 内容块 → pi 风格 JSON（get_messages）。
 fn block_to_json(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({"type": "text", "text": text}),
+        ContentBlock::Thinking { text } => json!({
+            "type": "thinking",
+            "thinking": text,
+            "thinkingSignature": "reasoning_content",
+        }),
         ContentBlock::ToolUse { call } => json!({
             "type": "toolCall",
             "id": call.call_id,
@@ -497,26 +458,54 @@ fn parse_args(raw: &str) -> Value {
 }
 
 /// 会话事件 → pi 事件行序列（流式投影；message 状态跨事件保持）。
-#[derive(Default)]
+///
+/// 流式装配：message_update 除增量外携带 `partial`/`message`（**内部拼接好的**
+/// 累积消息快照——content 按块累积：thinking / text / toolCall 分开），客户端
+/// 直接展示快照即可，无需自行拼增量。推理（thinking_*）与正文（text_*）区分流式。
 struct EventForwarder {
+    /// 提供商名（消息快照元数据）。
+    provider: Option<String>,
+    /// 模型 id（消息快照元数据）。
+    model: Option<String>,
     /// 当前 step 的 assistant 消息是否已开（message_start 已发）。
     msg_open: bool,
-    /// 当前文本块是否打开（text_start 已发、text_end 未发）。
-    text_open: bool,
-    /// 当前文本块在消息中的索引。
-    text_index: usize,
-    /// 当前文本块累积内容（text_end 携带）。
-    text_buf: String,
-    /// 已结束的块数（下一个块的 contentIndex）。
-    block_count: usize,
+    /// 已装配的内容块（最后一个可能是未闭合的 text/thinking 块）。
+    blocks: Vec<OpenBlock>,
+    /// 最后见到的 usage（chunk 或 assistant/message 事件）。
+    usage: Option<TokenUsage>,
+    /// message_start 的时间戳（Unix epoch 毫秒）。
+    started_ms: u64,
     /// call_id → 工具名（tool_execution_end 需要；ToolResult 事件不带 name）。
     tool_names: HashMap<String, String>,
 }
 
+/// 流式装配中的内容块（最后一个 Text/Thinking 即"打开"的块，随增量累积）。
+#[derive(Clone)]
+enum OpenBlock {
+    /// 文本块。
+    Text(String),
+    /// 推理块。
+    Thinking(String),
+    /// 工具调用块（一次到位，天然闭合）。
+    ToolUse(ToolCall),
+}
+
 impl EventForwarder {
-    fn on_event(&mut self, data: &SessionEventData) -> Vec<String> {
+    fn new(provider: Option<String>, model: Option<String>) -> Self {
+        Self {
+            provider,
+            model,
+            msg_open: false,
+            blocks: Vec::new(),
+            usage: None,
+            started_ms: 0,
+            tool_names: HashMap::new(),
+        }
+    }
+
+    fn on_event(&mut self, entry: &SessionEvent) -> Vec<String> {
         let mut out = Vec::new();
-        match data {
+        match &entry.data {
             SessionEventData::TurnStart { turn } => {
                 out.push(event(json!({"type": "agent_start"})));
                 out.push(event(json!({"type": "turn_start", "turn": turn})));
@@ -524,67 +513,74 @@ impl EventForwarder {
             SessionEventData::AssistantChunk { chunk, .. } => {
                 if !self.msg_open {
                     self.msg_open = true;
-                    self.block_count = 0;
+                    self.blocks.clear();
+                    self.usage = None;
+                    self.started_ms = entry.time;
                     out.push(event(json!({
                         "type": "message_start",
-                        "message": {"role": "assistant", "content": []},
+                        "message": self.message_json("pending"),
                     })));
                 }
                 match &chunk.delta {
                     ChunkDelta::Text { text } if !text.is_empty() => {
-                        if !self.text_open {
-                            self.text_open = true;
-                            self.text_index = self.block_count;
-                            out.push(event(json!({
-                                "type": "message_update",
-                                "assistantMessageEvent": {
-                                    "type": "text_start",
-                                    "contentIndex": self.text_index,
-                                },
-                            })));
-                        }
-                        self.text_buf.push_str(text);
-                        out.push(event(json!({
-                            "type": "message_update",
-                            "assistantMessageEvent": {
-                                "type": "text_delta",
-                                "contentIndex": self.text_index,
-                                "delta": text,
-                            },
-                        })));
+                        let index = self.open_block(OpenBlockKind::Text, &mut out);
+                        self.push_delta(&mut out, "text_delta", index, text);
+                    }
+                    ChunkDelta::Thinking { text } if !text.is_empty() => {
+                        let index = self.open_block(OpenBlockKind::Thinking, &mut out);
+                        self.push_delta(&mut out, "thinking_delta", index, text);
                     }
                     ChunkDelta::ToolUse { call } => {
-                        self.close_text(&mut out);
+                        self.close_open(&mut out);
+                        let index = self.blocks.len();
+                        self.blocks.push(OpenBlock::ToolUse(call.clone()));
                         // opencode 适配器在流尾一次性合成完整调用 → start + end 连续发出
+                        let mut start = json!({
+                            "type": "toolcall_start",
+                            "contentIndex": index,
+                        });
+                        start["partial"] = self.message_json("pending");
+                        start["message"] = self.message_json("pending");
                         out.push(event(json!({
                             "type": "message_update",
-                            "assistantMessageEvent": {
-                                "type": "toolcall_start",
-                                "contentIndex": self.block_count,
-                            },
+                            "assistantMessageEvent": start,
                         })));
+                        let mut end = json!({
+                            "type": "toolcall_end",
+                            "contentIndex": index,
+                            "toolCall": tool_call_to_json(call),
+                        });
+                        end["partial"] = self.message_json("pending");
+                        end["message"] = self.message_json("pending");
                         out.push(event(json!({
                             "type": "message_update",
-                            "assistantMessageEvent": {
-                                "type": "toolcall_end",
-                                "contentIndex": self.block_count,
-                                "toolCall": tool_call_to_json(call),
-                            },
+                            "assistantMessageEvent": end,
                         })));
-                        self.block_count += 1;
                     }
                     _ => {}
                 }
+                if let Some(usage) = chunk.usage {
+                    self.usage = Some(usage);
+                }
             }
-            SessionEventData::AssistantMessage { message, .. } => {
-                self.close_text(&mut out);
+            SessionEventData::AssistantMessage { usage, .. } => {
+                self.close_open(&mut out);
                 self.msg_open = false;
+                if let Some(usage) = usage {
+                    self.usage = Some(*usage);
+                }
+                let stop_reason = if self
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block, OpenBlock::ToolUse(_)))
+                {
+                    "toolUse"
+                } else {
+                    "stop"
+                };
                 out.push(event(json!({
                     "type": "message_end",
-                    "message": {
-                        "role": "assistant",
-                        "content": message.content.iter().map(block_to_json).collect::<Vec<_>>(),
-                    },
+                    "message": self.message_json(stop_reason),
                 })));
             }
             SessionEventData::ToolCall {
@@ -642,22 +638,128 @@ impl EventForwarder {
         out
     }
 
-    /// 关闭当前打开的文本块（text_end + 块计数推进）。
-    fn close_text(&mut self, out: &mut Vec<String>) {
-        if self.text_open {
-            self.text_open = false;
-            let content = std::mem::take(&mut self.text_buf);
-            out.push(event(json!({
-                "type": "message_update",
-                "assistantMessageEvent": {
-                    "type": "text_end",
-                    "contentIndex": self.text_index,
-                    "content": content,
-                },
-            })));
-            self.block_count += 1;
+    /// 打开（或续接）一个 text/thinking 块：返回其 contentIndex；
+    /// 类型切换时先闭合当前块（发对应的 *_end）。
+    fn open_block(&mut self, kind: OpenBlockKind, out: &mut Vec<String>) -> usize {
+        let already_open = matches!(
+            (self.blocks.last(), kind),
+            (Some(OpenBlock::Text(_)), OpenBlockKind::Text)
+                | (Some(OpenBlock::Thinking(_)), OpenBlockKind::Thinking)
+        );
+        if already_open {
+            return self.blocks.len() - 1;
         }
+        self.close_open(out);
+        let index = self.blocks.len();
+        self.blocks.push(match kind {
+            OpenBlockKind::Text => OpenBlock::Text(String::new()),
+            OpenBlockKind::Thinking => OpenBlock::Thinking(String::new()),
+        });
+        let start_kind = match kind {
+            OpenBlockKind::Text => "text_start",
+            OpenBlockKind::Thinking => "thinking_start",
+        };
+        let mut start = json!({"type": start_kind, "contentIndex": index});
+        start["partial"] = self.message_json("pending");
+        start["message"] = self.message_json("pending");
+        out.push(event(json!({
+            "type": "message_update",
+            "assistantMessageEvent": start,
+        })));
+        index
     }
+
+    /// 追加增量到打开的块，并回显累积快照（partial/message）。
+    fn push_delta(&mut self, out: &mut Vec<String>, kind: &str, index: usize, delta: &str) {
+        match self.blocks.get_mut(index) {
+            Some(OpenBlock::Text(text)) | Some(OpenBlock::Thinking(text)) => text.push_str(delta),
+            _ => {}
+        }
+        let mut update = json!({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": kind,
+                "contentIndex": index,
+                "delta": delta,
+            },
+        });
+        update["assistantMessageEvent"]["partial"] = self.message_json("pending");
+        update["assistantMessageEvent"]["message"] = self.message_json("pending");
+        out.push(event(update));
+    }
+
+    /// 闭合当前打开的 text/thinking 块（发 *_end + 回显累积内容）。
+    fn close_open(&mut self, out: &mut Vec<String>) {
+        let Some(last) = self.blocks.last() else {
+            return;
+        };
+        let (end_kind, index, content) = match last {
+            OpenBlock::Text(text) => ("text_end", self.blocks.len() - 1, text.clone()),
+            OpenBlock::Thinking(text) => ("thinking_end", self.blocks.len() - 1, text.clone()),
+            OpenBlock::ToolUse(_) => return,
+        };
+        let mut end = json!({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": end_kind,
+                "contentIndex": index,
+                "content": content,
+            },
+        });
+        end["assistantMessageEvent"]["partial"] = self.message_json("pending");
+        end["assistantMessageEvent"]["message"] = self.message_json("pending");
+        out.push(event(end));
+    }
+
+    /// 当前累积消息快照（pi AgentMessage 形状；stopReason 由调用方给定）。
+    fn message_json(&self, stop_reason: &str) -> Value {
+        let content: Vec<Value> = self.blocks.iter().map(open_block_to_json).collect();
+        json!({
+            "role": "assistant",
+            "content": content,
+            "api": "openai-completions",
+            "provider": self.provider,
+            "model": self.model,
+            "usage": usage_json(self.usage),
+            "stopReason": stop_reason,
+            "timestamp": self.started_ms,
+        })
+    }
+}
+
+/// 打开块类型。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpenBlockKind {
+    Text,
+    Thinking,
+}
+
+/// 流式装配块 → pi 内容块 JSON。
+fn open_block_to_json(block: &OpenBlock) -> Value {
+    match block {
+        OpenBlock::Text(text) => json!({"type": "text", "text": text}),
+        OpenBlock::Thinking(text) => json!({
+            "type": "thinking",
+            "thinking": text,
+            "thinkingSignature": "reasoning_content",
+        }),
+        OpenBlock::ToolUse(call) => tool_call_to_json(call),
+    }
+}
+
+/// usage → pi 形状（无用量全零；cost 未核算恒零）。
+fn usage_json(usage: Option<TokenUsage>) -> Value {
+    let (input, output) = usage
+        .map(|u| (u.input_tokens, u.output_tokens))
+        .unwrap_or((0, 0));
+    json!({
+        "input": input,
+        "output": output,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": input + output,
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
+    })
 }
 
 /// turn 结束原因 → pi 风格字符串。
@@ -695,10 +797,11 @@ async fn write_line<W: AsyncWrite + Unpin>(
 mod tests {
     use std::sync::atomic::AtomicU64;
 
-    use cos_session::SessionEventData;
+    use cos_llm::{AssistantMessage, ChunkDelta, ContentBlock, StreamChunk, TokenUsage};
+    use cos_session::{Session, SessionEventData, TurnEndReason};
     use serde_json::{Value, json};
 
-    use super::{Command, dispatch};
+    use super::{Command, EventForwarder, dispatch};
     use crate::{RunConfig, assemble};
 
     fn base_config() -> RunConfig {
@@ -774,5 +877,151 @@ mod tests {
             vec!["任务A"],
             "重复 id 被拒、ok 被取消 → 只剩任务A: {texts:?}"
         );
+    }
+
+    /// 转发器内部装配：thinking 与 text 分开成块、增量事件携带累积快照
+    /// （partial/message），message_end 带 usage 与 stopReason。
+    #[test]
+    fn forwarder_assembles_thinking_and_text_with_partials() {
+        let mut forwarder =
+            EventForwarder::new(Some("opencode-go".into()), Some("deepseek-v4-flash".into()));
+        let session = Session::new("t");
+        let chunk = |delta: ChunkDelta| cos_session::SessionEventData::AssistantChunk {
+            turn: 1,
+            step: 1,
+            chunk: StreamChunk { delta, usage: None },
+        };
+        let events = [
+            session.append(SessionEventData::TurnStart { turn: 1 }),
+            session.append(chunk(ChunkDelta::Thinking { text: "想".into() })),
+            session.append(chunk(ChunkDelta::Thinking { text: "考".into() })),
+            session.append(chunk(ChunkDelta::Text {
+                text: "你好".into(),
+            })),
+            session.append(SessionEventData::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: AssistantMessage::new(vec![
+                    ContentBlock::Thinking {
+                        text: "思考".into(),
+                    },
+                    ContentBlock::Text {
+                        text: "你好".into(),
+                    },
+                ]),
+                usage: Some(TokenUsage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                }),
+            }),
+            session.append(SessionEventData::TurnEnd {
+                turn: 1,
+                reason: TurnEndReason::Completed,
+            }),
+        ];
+        let lines: Vec<Value> = events
+            .iter()
+            .flat_map(|event| forwarder.on_event(event))
+            .map(|line| serde_json::from_str(&line).unwrap())
+            .collect();
+
+        let types: Vec<&str> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            types,
+            vec![
+                "agent_start",
+                "turn_start",
+                "message_start",
+                "message_update", // thinking_start
+                "message_update", // thinking_delta 想
+                "message_update", // thinking_delta 考
+                "message_update", // thinking_end
+                "message_update", // text_start
+                "message_update", // text_delta 你好
+                "message_update", // text_end
+                "message_end",
+                "turn_end",
+                "agent_end",
+                "agent_settled",
+            ]
+        );
+
+        // message_start：完整元数据 + 空 content
+        assert_eq!(lines[2]["message"]["api"], "openai-completions");
+        assert_eq!(lines[2]["message"]["provider"], "opencode-go");
+        assert_eq!(lines[2]["message"]["model"], "deepseek-v4-flash");
+        assert_eq!(lines[2]["message"]["stopReason"], "pending");
+        assert_eq!(lines[2]["message"]["content"].as_array().unwrap().len(), 0);
+
+        // 增量事件携带累积快照：第二个 thinking_delta 已拼入 "想"+"考"
+        let second_thinking = &lines[5]["assistantMessageEvent"];
+        assert_eq!(second_thinking["type"], "thinking_delta");
+        assert_eq!(second_thinking["delta"], "考");
+        let partial = &second_thinking["partial"];
+        assert_eq!(partial["content"][0]["type"], "thinking");
+        assert_eq!(partial["content"][0]["thinking"], "想考");
+        assert_eq!(
+            second_thinking["message"], *partial,
+            "message 与 partial 同值"
+        );
+
+        // text_delta 时快照含 thinking + text 两块
+        let text_delta = &lines[8]["assistantMessageEvent"];
+        assert_eq!(text_delta["type"], "text_delta");
+        assert_eq!(text_delta["contentIndex"], 1);
+        let content = &text_delta["partial"]["content"];
+        assert_eq!(content.as_array().unwrap().len(), 2);
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "你好");
+
+        // message_end：两块 + usage + stopReason stop
+        let message = &lines[10]["message"];
+        assert_eq!(message["content"].as_array().unwrap().len(), 2);
+        assert_eq!(message["usage"]["input"], 5);
+        assert_eq!(message["usage"]["output"], 2);
+        assert_eq!(message["usage"]["totalTokens"], 7);
+        assert_eq!(message["stopReason"], "stop");
+        assert!(message["timestamp"].is_u64());
+    }
+
+    /// 纯文本流：无 thinking 事件，只有 text_*。
+    #[test]
+    fn forwarder_plain_text_has_no_thinking_events() {
+        let mut forwarder = EventForwarder::new(None, None);
+        let session = Session::new("t");
+        let events = [
+            session.append(SessionEventData::TurnStart { turn: 1 }),
+            session.append(SessionEventData::AssistantChunk {
+                turn: 1,
+                step: 1,
+                chunk: StreamChunk::text("好"),
+            }),
+            session.append(SessionEventData::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: AssistantMessage::new(vec![ContentBlock::Text { text: "好".into() }]),
+                usage: None,
+            }),
+            session.append(SessionEventData::TurnEnd {
+                turn: 1,
+                reason: TurnEndReason::Completed,
+            }),
+        ];
+        let lines: Vec<Value> = events
+            .iter()
+            .flat_map(|event| forwarder.on_event(event))
+            .map(|line| serde_json::from_str(&line).unwrap())
+            .collect();
+        for line in &lines {
+            if line["type"] == "message_update" {
+                let kind = line["assistantMessageEvent"]["type"].as_str().unwrap();
+                assert!(
+                    kind.starts_with("text_"),
+                    "纯文本流不应有 thinking 事件: {kind}"
+                );
+            }
+        }
+        assert!(lines.iter().any(|l| l["type"] == "message_end"));
     }
 }

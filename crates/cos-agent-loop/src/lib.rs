@@ -450,6 +450,16 @@ impl AgentCore {
                                 _ => blocks.push(ContentBlock::Text { text }),
                             }
                         }
+                        ChunkDelta::Thinking { text } => {
+                            if text.is_empty() {
+                                continue;
+                            }
+                            // 推理与正文分开成块（消费方选择性展示）
+                            match blocks.last_mut() {
+                                Some(ContentBlock::Thinking { text: tail }) => tail.push_str(&text),
+                                _ => blocks.push(ContentBlock::Thinking { text }),
+                            }
+                        }
                         ChunkDelta::ToolUse { call } => blocks.push(ContentBlock::ToolUse { call }),
                     }
                 }
@@ -463,7 +473,7 @@ impl AgentCore {
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::ToolUse { call } => Some(call.clone()),
-                ContentBlock::Text { .. } => None,
+                ContentBlock::Text { .. } | ContentBlock::Thinking { .. } => None,
             })
             .collect();
         self.session.append(SessionEventData::AssistantMessage {
