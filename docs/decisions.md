@@ -147,3 +147,12 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   兼容、不 bump 版本）；opencode 适配器把带图用户消息映射为 OpenAI 多部分 content
   （`[{type:text}, {type:image_url}]`），纯文本仍为字符串（线上形态不变）。
   能力标注与传输解耦：标注用于路由/校验，传输由消息承载。
+- **CLI 三形态（REPL / RPC / 一次性）**：共用 `assemble`（内置服务 + LLM 注册表 + 插件树 +
+  主 agent 创建）、`run_turn`（followup → 等 idle，可被取消信号中断 → 从会话日志总结该 turn
+  的助手文本与工具轨迹）与 `finish`（不变量/digest/落盘+重放校验/逆序卸载）。形态选择：
+  无 `--prompt` 默认 REPL（TTY 显示提示符与横幅，管道输入逐行对话、EOF 结束）；
+  `--rpc` = stdio JSON-RPC 2.0 子集（每行一请求/响应：`ping`/`chat`{message,images?}/
+  `session`/`exit`/`help`，非法行 -32700、未知方法 -32601）；`--prompt` 保持一次性。
+  Ctrl-C 语义：一次性 = 取消后退出；REPL = 回复中取消当前 turn 回提示符（消费信号位）、
+  提示符处退出；RPC = 取消进行中的 chat、空闲时退出。e2e：spawn 真实二进制走管道协议
+  （`tests/rpc_e2e.rs`，demo mock 确定性脚本）。

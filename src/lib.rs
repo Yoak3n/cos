@@ -1,30 +1,37 @@
-//! cos —— CLI 宿主库（A 形态收口，P6）。
+//! cos —— CLI 宿主库。
 //!
-//! `run` 是完整演示链路：cordis.yml 装配插件树 → demo agent（mock LLM：
-//! 工具调用 → 回复）→ 不变量校验 → JSONL 持久化 + 重放校验 → 优雅退出
-//! （apply 逆序卸载，可审计）。`main.rs` 只做参数解析与结果打印。
+//! 三种形态共用同一装配（[`assemble`]）与收尾（[`finish`]）：
+//! - [`run`]：一次性（`--prompt`）——装配 → 一轮 → 收尾，返回 [`RunReport`]；
+//! - `repl::serve_repl`：交互式 REPL（命令行持续对话）；
+//! - `rpc::serve_rpc`：stdio JSON-RPC 服务（每行一个请求/响应，供外部程序调用）。
 
 #![warn(missing_docs)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cos_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
+use cos_agent::{Agent, AgentOptions, AgentRegistry, CreateAgentOptions};
 use cos_agent_loop::LoopFactory;
 use cos_core::{Context, Plugin};
 use cos_invariants::{InvariantRegistry, register_defaults};
-use cos_llm::{ChunkDelta, LlmAdapter, LlmRegistry, Message, StreamChunk, ToolCall, UserMessage};
+use cos_llm::{
+    ChunkDelta, InputContent, LlmAdapter, LlmRegistry, Message, StreamChunk, ToolCall, UserMessage,
+};
 use cos_llm_mock::{MockAdapter, MockReply};
 use cos_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use cos_loader::{self as loader, Profile};
 use cos_memory::MemoryStore;
 use cos_session::{
-    AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, load_jsonl, save_jsonl,
+    AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionEventData, SessionHeader, load_jsonl,
+    save_jsonl,
 };
 use cos_shell::provide_local_shell;
 use cos_system_prompt::PromptSections;
 use cos_tools::ToolRegistry;
 use thiserror::Error;
+
+pub mod repl;
+pub mod rpc;
 
 /// 运行配置。
 #[derive(Debug, Clone)]
@@ -33,10 +40,10 @@ pub struct RunConfig {
     pub config_path: String,
     /// 只输出装载计划（不启动）。
     pub dump_config: bool,
-    /// demo 会话 id。
+    /// 会话 id。
     pub session_id: String,
-    /// 演示用户消息。
-    pub prompt: String,
+    /// 一次性模式的用户消息（None = 交互/RPC 模式）。
+    pub prompt: Option<String>,
     /// 会话 JSONL 输出路径（None = 不落盘）。
     pub session_path: Option<String>,
     /// 外部取消信号（main 的 Ctrl-C 监视任务写入）。
@@ -129,8 +136,31 @@ pub fn builtin_plugin_ids() -> [&'static str; 4] {
     ]
 }
 
-/// 运行完整演示链路。
-pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
+/// 装配结果（REPL / RPC / 一次性共用）。
+pub struct Assembled {
+    /// 根上下文（服务/事件总线）。
+    pub root: Context,
+    /// 已装载插件树。
+    pub app: loader::LoadedApp,
+    /// 主 agent（对话入口）。
+    pub agent: Arc<dyn Agent>,
+}
+
+/// 一轮交互的摘要（REPL/RPC 共用）。
+#[derive(Debug, Clone)]
+pub struct TurnSummary {
+    /// 结束的 turn 号。
+    pub turn: u32,
+    /// 该 turn 的助手文本（多步拼接）。
+    pub reply: String,
+    /// 工具轨迹（如 "todo_write → 已写入 1 条任务"）。
+    pub tool_trace: Vec<String>,
+    /// 是否被取消信号中断。
+    pub cancelled: bool,
+}
+
+/// 装配：内置服务 + LLM 注册表 + 插件树 + 主 agent（三种形态共用）。
+pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
     // 锚点：保证插件 crate 的 inventory 注册表被链接
     let _ = builtin_plugin_ids();
     let root = Context::root();
@@ -150,7 +180,7 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
                 api_key: cfg.api_key.clone(),
                 model: cfg.model.clone(),
                 streaming: cfg.streaming,
-                input_content: vec![cos_llm::InputContent::Text],
+                input_content: vec![InputContent::Text],
             })),
         )?;
     } else {
@@ -168,22 +198,10 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
         .set_factory(Arc::new(LoopFactory))?;
 
     let profile = Profile::load(&config.config_path)?;
-
-    if config.dump_config {
-        return Ok(RunReport {
-            dump: Some(loader::dump_plan(&profile)?),
-            unload_order: Vec::new(),
-            events: Vec::new(),
-            messages: Vec::new(),
-            violations: Vec::new(),
-            services_after_unload: true,
-        });
-    }
-
     // 装配插件树
     let app = loader::load(&root, &profile)?;
 
-    // demo agent：LLM 统一管理解析（--agent-llm / --llm-* 的 "default"）或确定性 mock 脚本
+    // 主 agent：LLM 统一管理解析（--agent-llm / --llm-* 的 "default"）或确定性 mock 脚本
     let llm_registry = root.get::<LlmRegistry>().expect("刚装配");
     let (adapter, provider, model) = if let Some(id) = &config.agent_llm {
         let adapter = llm_registry
@@ -220,25 +238,117 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
         })
         .await?;
 
-    agent.followup(UserMessage::new(config.prompt.clone()));
-    match &config.cancel {
+    Ok(Assembled { root, app, agent })
+}
+
+/// 跑一轮交互：followup → 等 idle（可被取消信号中断）→ 总结该 turn。
+pub async fn run_turn(
+    agent: &Arc<dyn Agent>,
+    message: UserMessage,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> TurnSummary {
+    let before_turn = last_turn(agent.session());
+    agent.followup(message);
+    let mut cancelled = false;
+    match cancel {
         Some(flag) => {
             tokio::select! {
                 _ = agent.when_idle() => {}
                 _ = wait_for_cancel(flag.clone()) => {
                     agent.cancel(AbortCause::User, false);
                     agent.when_idle().await;
+                    cancelled = true;
                 }
             }
         }
         None => agent.when_idle().await,
     }
+    summarize_turn(agent.session(), before_turn + 1, cancelled)
+}
+
+/// 会话里最后一个 turn 号（0 = 空会话）。
+fn last_turn(session: &cos_session::Session) -> u32 {
+    session
+        .events()
+        .iter()
+        .filter_map(|event| match &event.data {
+            SessionEventData::TurnStart { turn } => Some(*turn),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// 从会话日志总结某 turn：助手文本 + 工具轨迹。
+fn summarize_turn(session: &cos_session::Session, turn: u32, cancelled: bool) -> TurnSummary {
+    let mut reply = String::new();
+    let mut calls: Vec<(String, String)> = Vec::new(); // (call_id, 显示)
+    let mut results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for event in session.events() {
+        match &event.data {
+            SessionEventData::ToolCall {
+                turn: t,
+                call_id,
+                name,
+                arguments,
+                ..
+            } if *t == turn => {
+                calls.push((call_id.clone(), format!("{name} {arguments}")));
+            }
+            SessionEventData::ToolResult {
+                turn: t,
+                call_id,
+                message,
+                ..
+            } if *t == turn => {
+                results.insert(call_id.clone(), message.content.clone());
+            }
+            SessionEventData::AssistantMessage {
+                turn: t, message, ..
+            } if *t == turn => {
+                let text = message.text();
+                if !text.is_empty() {
+                    if !reply.is_empty() {
+                        reply.push('\n');
+                    }
+                    reply.push_str(&text);
+                }
+            }
+            _ => {}
+        }
+    }
+    let tool_trace: Vec<String> = calls
+        .into_iter()
+        .map(|(call_id, display)| match results.get(&call_id) {
+            Some(result) => format!("{display} → {result}"),
+            None => display,
+        })
+        .collect();
+    TurnSummary {
+        turn,
+        reply,
+        tool_trace,
+        cancelled,
+    }
+}
+
+/// 收尾（三种形态共用）：不变量校验 + 会话末 digest + JSONL 落盘（含重放校验）+ 优雅卸载。
+pub async fn finish(assembled: &Assembled, config: &RunConfig) -> Result<RunReport, AppError> {
+    let Assembled { root, app, agent } = assembled;
 
     // 不变量：模型可见 ⟺ 已记录、seq 单调等
     let violations = root
         .get::<InvariantRegistry>()
         .expect("刚装配")
         .verify(agent.session());
+
+    // 会话末 digest 收尾（M3，记忆插件装配时）：统计 + 转录 → 卡三段注记（慢路径）
+    if let Ok(store) = root.get::<MemoryStore>() {
+        let transcript = transcript_of(agent.session());
+        if let Err(error) = store.digest(&transcript, cos_memory::now_ms()).await {
+            eprintln!("[memory] 会话末 digest 失败: {error}");
+        }
+    }
 
     // 持久化 + 重放校验（逐事件一致）
     if let Some(path) = &config.session_path {
@@ -252,14 +362,6 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
         let (loaded_header, loaded_events) = load_jsonl(path)?;
         if loaded_header.id != config.session_id || loaded_events != agent.session().events() {
             return Err(AppError::Other("会话重放不一致".into()));
-        }
-    }
-
-    // 会话末 digest 收尾（M3，记忆插件装配时）：统计 + 转录 → 卡三段注记（慢路径）
-    if let Ok(store) = root.get::<MemoryStore>() {
-        let transcript = transcript_of(agent.session());
-        if let Err(error) = store.digest(&transcript, cos_memory::now_ms()).await {
-            eprintln!("[memory] 会话末 digest 失败: {error}");
         }
     }
 
@@ -282,8 +384,35 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     })
 }
 
+/// 一次性演示链路（`--prompt`）：装配 → 一轮 → 收尾。
+pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
+    if config.dump_config {
+        let profile = Profile::load(&config.config_path)?;
+        return Ok(RunReport {
+            dump: Some(loader::dump_plan(&profile)?),
+            unload_order: Vec::new(),
+            events: Vec::new(),
+            messages: Vec::new(),
+            violations: Vec::new(),
+            services_after_unload: true,
+        });
+    }
+    let prompt = config
+        .prompt
+        .clone()
+        .ok_or_else(|| AppError::Other("一次性模式需要 --prompt".into()))?;
+    let assembled = assemble(&config).await?;
+    run_turn(
+        &assembled.agent,
+        UserMessage::new(prompt),
+        config.cancel.as_ref(),
+    )
+    .await;
+    finish(&assembled, &config).await
+}
+
 /// 轮询取消信号（main 的 Ctrl-C 监视任务写入）。
-async fn wait_for_cancel(flag: Arc<AtomicBool>) {
+pub(crate) async fn wait_for_cancel(flag: Arc<AtomicBool>) {
     loop {
         if flag.load(Ordering::Acquire) {
             return;

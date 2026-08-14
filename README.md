@@ -28,6 +28,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo deny check   # CI 内执行（本地需 cargo-deny）
 ```
 
+## 使用（CLI 三形态）
+
+```bash
+# 交互式 REPL（一键启动；无 --prompt 时默认）：输入消息持续对话，/exit 退出，Ctrl-C 取消当前回复
+cos --config examples/memory.yml --llm-base-url ... --llm-model ... --llm-api-key ... --llm-no-stream
+
+# stdio JSON-RPC 服务（供外部程序调用；每行一个请求/响应）
+cos --config examples/demo.yml --rpc
+# 方法：ping / chat {message, images?} / session / exit / help
+
+# 一次性（演示/脚本）
+cos --config examples/demo.yml --prompt "帮我记一条演示 todo"
+```
+
+三种形态共用同一装配（`assemble`：内置服务 + LLM 注册表 + 插件树 + 主 agent）与收尾
+（`finish`：不变量校验 + 会话末 digest + JSONL 落盘 + 优雅卸载）；每轮交互经
+`run_turn`（followup → 等 idle，可被 Ctrl-C 取消 → 总结该 turn 的回复与工具轨迹）。
+
 ## 状态
 
 - P0：workspace 骨架 + cos-core 契约初稿 + hello 插件验收 ✅

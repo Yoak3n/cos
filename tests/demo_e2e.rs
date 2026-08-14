@@ -8,7 +8,7 @@ fn demo_config() -> RunConfig {
         config_path: concat!(env!("CARGO_MANIFEST_DIR"), "/examples/demo.yml").to_string(),
         dump_config: false,
         session_id: "demo-e2e".into(),
-        prompt: "帮我记一条演示 todo".into(),
+        prompt: Some("帮我记一条演示 todo".into()),
         session_path: None,
         cancel: None,
         llm: None,
