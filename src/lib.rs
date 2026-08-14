@@ -144,6 +144,8 @@ pub struct Assembled {
     pub app: loader::LoadedApp,
     /// 主 agent（对话入口）。
     pub agent: Arc<dyn Agent>,
+    /// 是否回落到确定性演示脚本（未配置真实 LLM）。
+    pub demo_mode: bool,
 }
 
 /// 一轮交互的摘要（REPL/RPC 共用）。
@@ -201,13 +203,19 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
     // 装配插件树
     let app = loader::load(&root, &profile)?;
 
-    // 主 agent：LLM 统一管理解析（--agent-llm / --llm-* 的 "default"）或确定性 mock 脚本
+    // 主 agent：LLM 统一管理解析，优先级：
+    // --agent-llm <id> > --llm-* 的 "default" > yml 的 "main"（链或提供商）> 确定性演示脚本
     let llm_registry = root.get::<LlmRegistry>().expect("刚装配");
-    let (adapter, provider, model) = if let Some(id) = &config.agent_llm {
+    let (adapter, provider, model, demo_mode) = if let Some(id) = &config.agent_llm {
         let adapter = llm_registry
             .resolve_id(id)
             .map_err(|error| AppError::Other(format!("agent LLM '{id}' 不可用: {error}")))?;
-        (adapter, Some("llm-registry".to_string()), Some(id.clone()))
+        (
+            adapter,
+            Some("llm-registry".to_string()),
+            Some(id.clone()),
+            false,
+        )
     } else if config.llm.is_some() {
         let adapter = llm_registry
             .resolve_id("default")
@@ -216,12 +224,22 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
             adapter,
             Some("opencode".to_string()),
             config.llm.as_ref().map(|cfg| cfg.model.clone()),
+            false,
+        )
+    } else if let Ok(adapter) = llm_registry.resolve_id("main") {
+        // yml plugin-llm 定义了 main 链/提供商 → 自动使用（无需 --agent-llm）
+        (
+            adapter,
+            Some("llm-registry".to_string()),
+            Some("main".to_string()),
+            false,
         )
     } else {
         (
             Arc::new(MockAdapter::new("demo", demo_script())) as Arc<dyn LlmAdapter>,
             Some("demo".to_string()),
             Some("mock".to_string()),
+            true,
         )
     };
     let agent = root
@@ -238,7 +256,12 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
         })
         .await?;
 
-    Ok(Assembled { root, app, agent })
+    Ok(Assembled {
+        root,
+        app,
+        agent,
+        demo_mode,
+    })
 }
 
 /// 跑一轮交互：followup → 等 idle（可被取消信号中断）→ 总结该 turn。
@@ -334,7 +357,9 @@ fn summarize_turn(session: &cos_session::Session, turn: u32, cancelled: bool) ->
 
 /// 收尾（三种形态共用）：不变量校验 + 会话末 digest + JSONL 落盘（含重放校验）+ 优雅卸载。
 pub async fn finish(assembled: &Assembled, config: &RunConfig) -> Result<RunReport, AppError> {
-    let Assembled { root, app, agent } = assembled;
+    let Assembled {
+        root, app, agent, ..
+    } = assembled;
 
     // 不变量：模型可见 ⟺ 已记录、seq 单调等
     let violations = root

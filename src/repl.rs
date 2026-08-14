@@ -23,6 +23,12 @@ pub async fn serve_repl(
             "cos 交互模式 —— 输入消息与 agent 对话；/help 查看命令；\
              Ctrl-C 取消当前回复；/exit 退出"
         );
+        if assembled.demo_mode {
+            println!(
+                "注意：未配置真实 LLM（当前为确定性演示脚本）。\
+                 用 --llm-* 参数、或 yml plugin-llm（providers/chains）+ --agent-llm <id> 接入真实模型。"
+            );
+        }
     }
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     loop {
