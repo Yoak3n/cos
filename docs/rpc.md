@@ -77,7 +77,9 @@ cos --config cordis.yml --rpc [--session <id>] [--no-save]
 
 `message_update.assistantMessageEvent` 区分推理与正文：`thinking_start` / `thinking_delta` /
 `thinking_end`（`reasoning_content`）、`text_start` / `text_delta` / `text_end`、
-`toolcall_start` / `toolcall_end`（含完整 `toolCall`，适配器在流尾一次性合成）。
+`toolcall_start` / `toolcall_delta` / `toolcall_end`（`toolcall_end` 含完整 `toolCall`；
+cos 适配器一次性合成调用，`toolcall_delta` 单块携带全量参数字符串，客户端缓冲 delta、
+以 `toolcall_end.toolCall` 为准）。
 
 **内部拼接**：每条 `message_update` 的 `assistantMessageEvent` 除增量（`delta`）外携带
 `partial` 与 `message`——**已拼接好的累积消息快照**（`content` 按块累积：thinking / text /

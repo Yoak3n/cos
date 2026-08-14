@@ -534,7 +534,8 @@ impl EventForwarder {
                         self.close_open(&mut out);
                         let index = self.blocks.len();
                         self.blocks.push(OpenBlock::ToolUse(call.clone()));
-                        // opencode 适配器在流尾一次性合成完整调用 → start + end 连续发出
+                        // 适配器在流尾一次性合成完整调用 → start/delta/end 连续发出
+                        // （toolcall_delta 单块携带全量参数字符串；客户端以 toolcall_end 为准）
                         let mut start = json!({
                             "type": "toolcall_start",
                             "contentIndex": index,
@@ -545,6 +546,19 @@ impl EventForwarder {
                             "type": "message_update",
                             "assistantMessageEvent": start,
                         })));
+                        if !call.arguments.is_empty() {
+                            let mut delta = json!({
+                                "type": "toolcall_delta",
+                                "contentIndex": index,
+                                "delta": call.arguments,
+                            });
+                            delta["partial"] = self.message_json("pending");
+                            delta["message"] = self.message_json("pending");
+                            out.push(event(json!({
+                                "type": "message_update",
+                                "assistantMessageEvent": delta,
+                            })));
+                        }
                         let mut end = json!({
                             "type": "toolcall_end",
                             "contentIndex": index,
@@ -743,7 +757,12 @@ fn open_block_to_json(block: &OpenBlock) -> Value {
             "thinking": text,
             "thinkingSignature": "reasoning_content",
         }),
-        OpenBlock::ToolUse(call) => tool_call_to_json(call),
+        OpenBlock::ToolUse(call) => {
+            // 消息 content 块带 type；toolcall_end 的 toolCall 是裸对象（不加）
+            let mut value = tool_call_to_json(call);
+            value["type"] = json!("toolCall");
+            value
+        }
     }
 }
 
@@ -1023,5 +1042,77 @@ mod tests {
             }
         }
         assert!(lines.iter().any(|l| l["type"] == "message_end"));
+    }
+
+    /// 工具调用：toolcall_start → toolcall_delta（全量参数字符串）→ toolcall_end；
+    /// message_end stopReason = toolUse。
+    #[test]
+    fn forwarder_emits_toolcall_delta_between_start_and_end() {
+        let mut forwarder = EventForwarder::new(None, None);
+        let session = Session::new("t");
+        let events = [
+            session.append(SessionEventData::TurnStart { turn: 1 }),
+            session.append(SessionEventData::AssistantChunk {
+                turn: 1,
+                step: 1,
+                chunk: StreamChunk {
+                    delta: ChunkDelta::ToolUse {
+                        call: cos_llm::ToolCall {
+                            call_id: "call_1".into(),
+                            name: "recall".into(),
+                            arguments: r#"{"query":"咖啡"}"#.into(),
+                        },
+                    },
+                    usage: None,
+                },
+            }),
+            session.append(SessionEventData::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: AssistantMessage::new(vec![ContentBlock::ToolUse {
+                    call: cos_llm::ToolCall {
+                        call_id: "call_1".into(),
+                        name: "recall".into(),
+                        arguments: r#"{"query":"咖啡"}"#.into(),
+                    },
+                }]),
+                usage: None,
+            }),
+            session.append(SessionEventData::TurnEnd {
+                turn: 1,
+                reason: TurnEndReason::Completed,
+            }),
+        ];
+        let lines: Vec<Value> = events
+            .iter()
+            .flat_map(|event| forwarder.on_event(event))
+            .map(|line| serde_json::from_str(&line).unwrap())
+            .collect();
+
+        let deltas: Vec<&Value> = lines
+            .iter()
+            .filter(|l| l["type"] == "message_update")
+            .map(|l| &l["assistantMessageEvent"])
+            .collect();
+        let kinds: Vec<&str> = deltas.iter().map(|d| d["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec!["toolcall_start", "toolcall_delta", "toolcall_end"],
+            "start → delta → end 完整序列"
+        );
+        assert_eq!(deltas[0]["contentIndex"], 0);
+        assert_eq!(
+            deltas[1]["delta"], r#"{"query":"咖啡"}"#,
+            "toolcall_delta 携带参数字符串"
+        );
+        assert_eq!(deltas[2]["toolCall"]["id"], "call_1");
+        assert_eq!(deltas[2]["toolCall"]["arguments"]["query"], "咖啡");
+
+        let message_end = lines
+            .iter()
+            .find(|l| l["type"] == "message_end")
+            .expect("应有 message_end");
+        assert_eq!(message_end["message"]["stopReason"], "toolUse");
+        assert_eq!(message_end["message"]["content"][0]["type"], "toolCall");
     }
 }
