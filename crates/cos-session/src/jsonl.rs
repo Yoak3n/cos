@@ -6,7 +6,7 @@ use crate::error::SessionError;
 use crate::session::Session;
 use crate::types::{SESSION_FORMAT_VERSION, SessionEvent, SessionHeader};
 
-/// 保存会话：`header` 一行 + 每条事件一行。
+/// 保存会话：`header` 一行 + 每条事件一行（父目录不存在时自动创建）。
 pub fn save_jsonl(
     session: &Session,
     header: &SessionHeader,
@@ -18,6 +18,11 @@ pub fn save_jsonl(
     for event in session.events() {
         text.push_str(&serde_json::to_string(&event)?);
         text.push('\n');
+    }
+    if let Some(parent) = path.as_ref().parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, text)?;
     Ok(())
