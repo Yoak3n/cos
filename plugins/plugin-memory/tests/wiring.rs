@@ -32,6 +32,9 @@ async fn apply_wires_memory_service_and_four_tools() {
             &ctx,
             &MemoryConfig {
                 db_path: path.clone(),
+                max_context_chars: 6000,
+                keep_tail: 6,
+                digest_every: 8,
             },
         )
         .unwrap();

@@ -56,6 +56,9 @@ async fn turn_absorbed_then_recalled_and_injected() {
             &ctx,
             &MemoryConfig {
                 db_path: path.clone(),
+                max_context_chars: 6000,
+                keep_tail: 6,
+                digest_every: 8,
             },
         )
         .unwrap();

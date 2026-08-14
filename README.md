@@ -55,4 +55,12 @@ cargo deny check   # CI 内执行（本地需 cargo-deny）
   LLM（openecode zen：`https://opencode.ai/zen/v1`，免费模型 `deepseek-v4-flash-free` 实测可用）；
   `examples/memory.yml` 演示清单；mock 双脚本验收 + 本地回环 SSE 5 测试；实端点冒烟通过（75 事件、
   不变量全过、逆序卸载）
-- M3：上下文自动压缩 + 会话末 digest（慢路径）+ 自我认知/个性浮现（待推进）
+- M3：上下文自动压缩 + digest 慢路径 + 自我认知 ✅ —— `agent/request` 超阈值（`max_context_chars`）
+  时旧消息压进**滚动摘要**（`session_state` KV 持久化，`keep_tail` 尾部窗口保原文；压缩失败宁可长
+  不可丢），摘要注入 system（进 request/header 日志，不变量不受影响）；digest 慢路径 = 统计
+  （事件/主题/跨度地面真值）+ 转录头 → 卡三段注记（高门槛保守，agent_model 含认知缺口→主动追问），
+  会话中每 `digest_every` turn 节流触发 + cos 关闭时收尾；修复实端点 429 冒烟暴露的 loop 缺陷
+  （LLM 失败路径漏记 step/end，step-pairing 违规，回归测试钉死）；kernel digest/压缩/KV 4 测试 +
+  压缩全链路测试；实端点冒烟：主 turn 通过 + digest 遇免费额度限流**失败软降级**（报错不崩、
+  不变量全过）
+- M3+（后续）：promises 表接线、情绪趋势、晋升机制、多会话持久化（可继续按需推进）

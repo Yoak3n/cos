@@ -149,11 +149,52 @@ impl MemoryStore {
         }
     }
 
-    /// 会话末慢消化（M3 完整实现；M1 提供接口与空默认：只做衰减）。
-    pub async fn digest(&self, _transcript: &str, ts: i64) -> Result<()> {
+    /// 会话末慢消化（推断层，M3）：统计 + 转录头 → 卡三段注记 → 合并落库。
+    ///
+    /// 慢路径与快提取是**不同机制**：输入是统计（地面真值）+ 转录，输出只进关系卡，
+    /// 高门槛保守（不确定不写）。转录超长时只取头部（确定性截断，非 LLM 压缩）。
+    pub async fn digest(&self, transcript: &str, ts: i64) -> Result<()> {
+        let card = self.card()?;
+        let stats = self.conversation_stats()?;
+        let head = truncate_chars(transcript, DIGEST_TRANSCRIPT_CAP);
+        let notes = extract::digest_notes(self.llm(), &card, &stats, &head).await?;
+        let merged = RelationCard {
+            profile: extract::merge_card_section(self.llm(), &card.profile, &notes.profile).await?,
+            agent_model: extract::merge_card_section(
+                self.llm(),
+                &card.agent_model,
+                &notes.agent_model,
+            )
+            .await?,
+            relationship: extract::merge_card_section(
+                self.llm(),
+                &card.relationship,
+                &notes.relationship,
+            )
+            .await?,
+            updated_at: ts,
+        };
+        self.set_card(&merged)?;
         self.apply_decay(ts)?;
         Ok(())
     }
+
+    /// 上下文滚动压缩（读路径旁路，M3）：旧摘要 + 新增对话 → 新摘要。
+    pub async fn compress_context(&self, old_summary: &str, dialog: &str) -> Result<String> {
+        extract::compress_dialog(self.llm(), old_summary, dialog).await
+    }
+}
+
+/// digest 转录头上限（字符）。
+const DIGEST_TRANSCRIPT_CAP: usize = 12_000;
+
+/// 确定性截断（超长转录只取头部 + 省略标记）。
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max).collect();
+    format!("{head}\n…（转录过长，已截断）")
 }
 
 /// 由事件重建 turn pair（插件侧从会话日志投影）。

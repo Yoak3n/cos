@@ -308,6 +308,9 @@ impl AgentCore {
                         turn_ends = Some(TurnEndReason::Aborted {
                             cause: handle.cause().unwrap_or(AbortCause::User),
                         });
+                        // 先写日志：失败路径同样闭合 step（step/start 与 step/end 配对）
+                        self.session
+                            .append(SessionEventData::StepEnd { turn, step });
                         return Err(LoopError::Aborted);
                     }
                     Err(error) => {
@@ -323,6 +326,9 @@ impl AgentCore {
                                 message: error.to_string(),
                             },
                         );
+                        // 先写日志：失败路径同样闭合 step（step/start 与 step/end 配对）
+                        self.session
+                            .append(SessionEventData::StepEnd { turn, step });
                         return Err(error);
                     }
                 }

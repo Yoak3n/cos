@@ -132,6 +132,28 @@ const CARD_MERGE_PROMPT: &str = r#"你是关系卡维护器。
 - 保持紧凑（不超过 500 字），身份类事实永远保留
 - 只输出 JSON，不要解释。"#;
 
+/// 上下文压缩系统提示（滚动摘要：旧摘要 + 新增对话 → 新摘要）。
+const COMPRESS_PROMPT: &str = r#"你是对话压缩器。
+输入：一段既有摘要（可为空）+ 一段新的对话记录（用户/助手多轮）。
+输出（严格 JSON）：{"summary": "合并后的要点摘要"}。
+规则：
+- 保留：身份事实、承诺、偏好、正在进行的事、纠错结论
+- 丢弃：寒暄、重复表述、已完成的琐碎事务
+- 要点式紧凑列表，不超过 300 字
+- 只输出 JSON，不要解释。"#;
+
+/// digest 推断系统提示（慢路径：统计 + 转录头 → 三段注记，高门槛保守）。
+const DIGEST_PROMPT: &str = r#"你是记忆慢消化器（推断层）。
+输入：当前关系卡三段 + 统计（事件数/主题数/高频主题/时间跨度）+ 会话转录（截断头部）。
+输出（严格 JSON）：
+{"profile_notes": ["关于用户的行"], "agent_model_notes": ["关于助手自己的行"], "relationship_notes": ["关于两人关系的行"]}
+规则：
+- 只写有统计或转录直接支撑的高置信度结论；不确定一律不写（空数组合法）
+- 模式类（"经常/总是/报喜不报忧"）需多轮证据；单次提及不算
+- 认知缺口：对照模板坐标系（名字/生日/工作/家人/偏好/作息/关系史），
+  把"还不知道但值得主动问"的维度写进 agent_model_notes
+- 每段不超过 5 条，只输出 JSON，不要解释。"#;
+
 /// 收集流式响应文本。
 pub(crate) async fn collect_text(llm: &dyn LlmAdapter, request: LlmRequest) -> Result<String> {
     let mut text = String::new();
@@ -269,4 +291,70 @@ pub(crate) async fn merge_card_section(
     let text = collect_text(llm.as_ref(), request).await?;
     let raw: RawCardMerge = parse_json_output(&text, "卡合并")?;
     Ok(raw.text)
+}
+
+/// 滚动压缩：旧摘要 + 新增对话 → 新摘要（上下文自动压缩的 LLM 步）。
+pub(crate) async fn compress_dialog(
+    llm: &Arc<dyn LlmAdapter>,
+    old_summary: &str,
+    dialog: &str,
+) -> Result<String> {
+    let user_payload = format!("既有摘要:\n{old_summary}\n\n新增对话:\n{dialog}");
+    let request = LlmRequest {
+        system: Some(COMPRESS_PROMPT.into()),
+        messages: vec![Message::User(UserMessage::new(user_payload))],
+        tools: Vec::new(),
+    };
+    let text = collect_text(llm.as_ref(), request).await?;
+    #[derive(Deserialize)]
+    struct RawSummary {
+        summary: String,
+    }
+    let raw: RawSummary = parse_json_output(&text, "压缩")?;
+    Ok(raw.summary)
+}
+
+/// digest 输出（三段注记，复用卡合并落库）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct DigestNotes {
+    /// profile 段注记。
+    pub profile: Vec<String>,
+    /// agent_model 段注记。
+    pub agent_model: Vec<String>,
+    /// relationship 段注记。
+    pub relationship: Vec<String>,
+}
+
+/// digest 推断：统计 + 转录头 → 三段注记（高门槛保守，不确定不写）。
+pub(crate) async fn digest_notes(
+    llm: &Arc<dyn LlmAdapter>,
+    card: &RelationCard,
+    stats: &str,
+    transcript: &str,
+) -> Result<DigestNotes> {
+    let user_payload = format!(
+        "关系卡（当前）：\nprofile: {}\nagent_model: {}\nrelationship: {}\n\n统计:\n{stats}\n\n会话转录（头）:\n{transcript}",
+        card.profile, card.agent_model, card.relationship
+    );
+    let request = LlmRequest {
+        system: Some(DIGEST_PROMPT.into()),
+        messages: vec![Message::User(UserMessage::new(user_payload))],
+        tools: Vec::new(),
+    };
+    let text = collect_text(llm.as_ref(), request).await?;
+    #[derive(Deserialize)]
+    struct RawDigest {
+        #[serde(default)]
+        profile_notes: Vec<String>,
+        #[serde(default)]
+        agent_model_notes: Vec<String>,
+        #[serde(default)]
+        relationship_notes: Vec<String>,
+    }
+    let raw: RawDigest = parse_json_output(&text, "digest")?;
+    Ok(DigestNotes {
+        profile: raw.profile_notes,
+        agent_model: raw.agent_model_notes,
+        relationship: raw.relationship_notes,
+    })
 }

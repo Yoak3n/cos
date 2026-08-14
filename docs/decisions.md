@@ -94,3 +94,24 @@ dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 - **agent 读/写挂钩（plugin-memory）**：写 = `agent/pre-step` waterfall（step 1、turn > 1 时消化上一 turn）：`current_initiator()` 取会话 → 按 `TurnStart` 跟踪 turn 号重建 user/assistant 文本（UserMessage 事件无 turn 字段）→ `apply_turn` **内联 await**（正确性优先：下一请求前记忆已就绪；M3 digest 再优化时延）。记忆失败只落 stderr、不阻塞对话。读 = `agent/request` waterfall（`next()` 委托后改 `system`）：查询 = 请求里最后一条用户消息；Mode A 命中 →【相关记忆】段，否则 Mode B `recent_feed(3)` →【最近聊过】段；关系卡（profile/agent_model/relationship）有内容时常驻注入【关系卡】段；原 system 保留在注入段之后。注入发生在 `request/header` 日志之前 → 模型可见 ⟺ 已记录不变量继续成立。两个监听器随插件 fiber 卸载自动失效。
 - **MemoryStore::open 建父目录**：`sessions/memory.db` 等路径父目录不存在时 `create_dir_all`（新增 `MemoryError::Io`）；`/sessions` 运行时产物入 .gitignore。
 - **M2 验收**：本地回环 TCP 打桩 5 测试（流式增量 + usage、4xx 不重试、5xx 兜底、error 块兜底、兜底双败报错）+ agent 双 mock 全链路测试（turn 消化 → recall/关系卡注入 system）+ 实端点冒烟（75 事件、不变量全过、逆序卸载）。
+
+## 阶段 2（桌面陪伴 agent）—— M3 决策
+
+- **上下文自动压缩（agent/request，M3）**：模型可见消息总字符数超 `max_context_chars`（默认 6000）→
+  旧消息压进**滚动摘要**（LLM 步：旧摘要 + 新增对话 → 新摘要，要点式 ≤300 字），保留尾部 `keep_tail`
+  （默认 6）条原文；摘要经 `session_state` KV 表按 `summary:{agent_id}` 持久化（重启可续）。**压缩失败
+  宁可长不可丢**：不截断、不降级（与"宁可晚合并不可错合并"同源）。摘要注入 system 而非伪造消息 →
+  进 request/header 日志，模型可见 ⟺ 已记录不变量不受影响；旧消息从请求剔除是安全的（不变量只要求
+  可见者必有日志，不要求日志全可见）。
+- **digest 慢路径（推断层，M3）**：`MemoryStore::digest(transcript, ts)` = 统计（事件数/主题数/高频
+  主题/时间跨度，确定性地面真值）+ 转录头（确定性截断 12k 字符，非 LLM 压缩）→ `digest_notes` 三段
+  注记（高门槛保守：只写有统计或转录直接支撑的结论；认知缺口对照模板坐标系写进 agent_model）→
+  `merge_card_section` 逐段落库。触发双轨：会话中 `agent/status`→Idle 按 turn 进度节流（每
+  `digest_every` 默认 8 turn 一次，避免每次空闲都打 LLM——曾误触发于每个 turn 间隙，mock 脚本被
+  抢消耗费）+ **宿主收尾**：cos 在 when_idle 后对会话末段显式 `digest`（单会话 CLI 的"会话末"就在这）。
+  失败只落 stderr、guard 不推进（下次重试），陪伴不因 digest 崩。
+- **M3 实端点暴露的 loop 缺陷**：LLM 请求失败路径（429 等）旧实现提前 return 漏记 `step/end` →
+  step-pairing 不变量违规；修复为失败分支同样先写 StepEnd 日志再收束（回归测试
+  `crates/dsh-agent-loop/tests/error_path.rs` 钉死）。
+- **实端点限流观测**：免费模型 `deepseek-v4-flash-free` 有 FreeUsageLimitError（429），当日测试消耗
+  较快；主 turn 与 digest 失败均**软降级**（流内 Err → 日志 → 继续），digest 失败不设 guard 下回重试。

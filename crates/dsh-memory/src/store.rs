@@ -205,6 +205,10 @@ CREATE TABLE IF NOT EXISTS self_history (
   content   TEXT NOT NULL,
   ts        INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_topics_last ON topics(last_discussed_at);
 CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic_id);
 ";
@@ -296,6 +300,53 @@ impl MemoryStore {
             params![card.profile, card.agent_model, card.relationship, card.updated_at],
         )?;
         Ok(())
+    }
+
+    /// 会话级 KV 状态（滚动摘要、digest 进度等，M3）。
+    pub fn get_state(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare("SELECT value FROM session_state WHERE key = ?1")?;
+        let mut rows = statement.query_map([key], |row| row.get::<_, String>(0))?;
+        rows.next().transpose().map_err(Into::into)
+    }
+
+    /// 写会话级 KV 状态（upsert）。
+    pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO session_state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// 会话统计（digest 的地面真值输入）：事件数 / 主题数 / 高频主题 / 时间跨度。
+    pub fn conversation_stats(&self) -> Result<String> {
+        let topics = self.topics()?;
+        let events = self.events(None)?;
+        let span_days = match (events.first(), events.last()) {
+            (Some(first), Some(last)) => (last.2 - first.2) as f64 / 86_400_000.0,
+            _ => 0.0,
+        };
+        let mut ranked: Vec<&Topic> = topics.iter().collect();
+        ranked.sort_by_key(|topic| std::cmp::Reverse(topic.n_times));
+        let top: Vec<String> = ranked
+            .iter()
+            .take(3)
+            .map(|topic| format!("{}（{} 次）", topic.canonical_name, topic.n_times))
+            .collect();
+        Ok(format!(
+            "事件总数: {}；主题数: {}；时间跨度: {:.1} 天；高频主题: {}",
+            events.len(),
+            topics.len(),
+            span_days,
+            if top.is_empty() {
+                "无".to_string()
+            } else {
+                top.join("、")
+            }
+        ))
     }
 
     /// 事件表（append-only 真相源）；`topic_id` 过滤可选。

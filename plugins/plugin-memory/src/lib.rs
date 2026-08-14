@@ -1,7 +1,9 @@
-//! plugin-memory —— 记忆插件接线（M1/M2）：打开存储、提供 `memory` 服务、注册四工具，
+//! plugin-memory —— 记忆插件接线（M1/M2/M3）：打开存储、提供 `memory` 服务、注册四工具，
 //! 并挂 agent 读/写路径：
 //! - 写（`agent/pre-step`，step 1）：把上一 turn 消化进记忆（apply_turn，非阻塞错误）；
-//! - 读（`agent/request`）：Mode A 主动 recall + Mode B 最近聊过 + 关系卡常驻注入 system。
+//! - 读（`agent/request`）：上下文滚动压缩（超阈值 → 摘要 + 尾部窗口，M3）+ Mode A 主动
+//!   recall + Mode B 最近聊过 + 关系卡常驻注入 system；
+//! - 会话末（`agent/status` → Idle）：digest 慢路径（统计 + 转录 → 卡三段注记，M3）。
 //!
 //! 接缝纪律：只依赖 Definition crate（dsh-memory / dsh-tools / dsh-core / dsh-session /
 //! dsh-agent / dsh-llm），不依赖 Provider 或 dsh-agent-loop。
@@ -10,7 +12,9 @@
 
 use std::sync::Arc;
 
-use dsh_agent::{PreStepDecision, PreStepPayload, current_initiator};
+use dsh_agent::{
+    AgentStatus, AgentStatusPayload, PreStepDecision, PreStepPayload, current_initiator,
+};
 use dsh_core::{Context, CoreError, CoreResult, EffectHandle, Plugin, Validate};
 use dsh_llm::{LlmRequest, Message};
 use dsh_memory::{
@@ -28,10 +32,31 @@ pub struct MemoryConfig {
     /// SQLite 数据库路径。
     #[serde(default = "default_db_path")]
     pub db_path: String,
+    /// 上下文压缩阈值（模型可见消息总字符数，M3）。
+    #[serde(default = "default_max_context")]
+    pub max_context_chars: usize,
+    /// 压缩时保留的尾部消息条数（不压缩的窗口，M3）。
+    #[serde(default = "default_keep_tail")]
+    pub keep_tail: usize,
+    /// 会话中每隔多少 turn 做一次 digest 慢消化（会话末尾段由宿主收尾，M3）。
+    #[serde(default = "default_digest_every")]
+    pub digest_every: usize,
 }
 
 fn default_db_path() -> String {
     "memory.db".into()
+}
+
+fn default_max_context() -> usize {
+    6000
+}
+
+fn default_keep_tail() -> usize {
+    6
+}
+
+fn default_digest_every() -> usize {
+    8
 }
 
 impl Validate for MemoryConfig {}
@@ -294,7 +319,8 @@ fn format_hits(hits: &[MemoryHit]) -> serde_json::Value {
     })
 }
 
-/// 写挂钩（M2）：`agent/pre-step`，每 turn 第一步进入前消化上一 turn（会话 → 记忆）。
+/// 写挂钩（M2/M3）：`agent/pre-step`，每 turn 第一步进入前消化上一 turn（会话 → 记忆），
+/// 并记录当前 turn 进度（digest 节流的依据）。
 ///
 /// 记忆失败不阻塞对话（陪伴优先）：错误只落 stderr；记忆是尽力而为的旁路。
 fn register_write_hook(ctx: &Context, store: Arc<MemoryStore>) -> CoreResult<EffectHandle> {
@@ -317,28 +343,181 @@ fn register_write_hook(ctx: &Context, store: Arc<MemoryStore>) -> CoreResult<Eff
                     eprintln!("[memory] 消化 turn {previous} 失败: {error}");
                 }
             }
+            if payload.step == 1 {
+                let _ = store.set_state(
+                    &format!("turn:{}", payload.agent_id),
+                    &payload.turn.to_string(),
+                );
+            }
             decision
         })
     })
 }
 
-/// 读挂钩（M2）：`agent/request`，把记忆段注入 system：
-/// Mode A 命中 → 相关记忆；否则 Mode B 最近聊过；关系卡常驻。
-fn register_read_hook(ctx: &Context, store: Arc<MemoryStore>) -> CoreResult<EffectHandle> {
+/// 读挂钩（M2/M3）：`agent/request`，把记忆段注入 system：
+/// 上下文滚动压缩（M3，超阈值 → 摘要 + 尾部窗口）；Mode A 命中 → 相关记忆；
+/// 否则 Mode B 最近聊过；关系卡常驻。
+fn register_read_hook(
+    ctx: &Context,
+    store: Arc<MemoryStore>,
+    max_context_chars: usize,
+    keep_tail: usize,
+) -> CoreResult<EffectHandle> {
     ctx.on_waterfall::<LlmRequest, LlmRequest>("agent/request", move |d| {
         let query = last_user_text(d.value());
         let store = store.clone();
         Box::pin(async move {
             let mut request = d.next().await;
+            let mut sections: Vec<String> = Vec::new();
+
+            // 1. 上下文压缩（先做：决定保留哪些消息 + 产出滚动摘要）
+            let agent_id = current_initiator().map(|agent| agent.id().to_string());
+            if let Some(id) = agent_id.as_deref()
+                && let Some((summary, tail)) =
+                    compress_if_needed(&store, id, &request.messages, max_context_chars, keep_tail)
+                        .await
+            {
+                request.messages = tail;
+                sections.push(format!("【对话摘要】\n{summary}"));
+            }
+
+            // 2. 记忆段（Mode A/B + 关系卡）
             if let Some(section) = build_memory_section(&store, query.as_deref()).await {
+                sections.push(section);
+            }
+
+            if !sections.is_empty() {
                 request.system = Some(match request.system {
-                    Some(original) => format!("{section}\n\n{original}"),
-                    None => section,
+                    Some(original) => format!("{}\n\n{original}", sections.join("\n\n")),
+                    None => sections.join("\n\n"),
                 });
             }
             request
         })
     })
+}
+
+/// 上下文压缩：超阈值时把旧消息压进滚动摘要，保留尾部 `keep_tail` 条原文。
+/// 压缩失败 → 返回 `None`（宁可长，不可丢：不截断、不降级）。
+async fn compress_if_needed(
+    store: &MemoryStore,
+    agent_id: &str,
+    messages: &[Message],
+    max_chars: usize,
+    keep_tail: usize,
+) -> Option<(String, Vec<Message>)> {
+    if messages.len() <= keep_tail {
+        return None;
+    }
+    let total: usize = messages.iter().map(message_chars).sum();
+    if total <= max_chars {
+        return None;
+    }
+    let split = messages.len() - keep_tail;
+    let dialog = format_dialog(&messages[..split]);
+    let old = store
+        .get_state(&format!("summary:{agent_id}"))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let summary = match store.compress_context(&old, &dialog).await {
+        Ok(summary) => summary,
+        Err(error) => {
+            eprintln!("[memory] 上下文压缩失败: {error}");
+            return None;
+        }
+    };
+    let _ = store.set_state(&format!("summary:{agent_id}"), &summary);
+    Some((summary, messages[split..].to_vec()))
+}
+
+/// 消息的模型可见字符数（压缩阈值计量）。
+fn message_chars(message: &Message) -> usize {
+    match message {
+        Message::System { content } => content.chars().count(),
+        Message::User(user) => user.content.chars().count(),
+        Message::Assistant(assistant) => assistant.text().chars().count(),
+        Message::Tool(tool) => tool.content.chars().count(),
+        Message::Custom { data, .. } => data.to_string().chars().count(),
+    }
+}
+
+/// 消息序列 → 对话文本（压缩输入）。
+fn format_dialog(messages: &[Message]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for message in messages {
+        match message {
+            Message::System { content } => lines.push(format!("系统: {content}")),
+            Message::User(user) => lines.push(format!("用户: {}", user.content)),
+            Message::Assistant(assistant) => lines.push(format!("助手: {}", assistant.text())),
+            Message::Tool(tool) => lines.push(format!("工具结果: {}", tool.content)),
+            Message::Custom { name, data } => lines.push(format!("[{name}]: {data}")),
+        }
+    }
+    lines.join("\n")
+}
+
+/// 会话中 digest 挂钩（M3）：`agent/status` → Idle 时按 turn 进度节流派生慢消化任务。
+/// 每累计 `digest_every` turn 一次；会话末尾段由宿主（cos）收尾，避免每次空闲都打 LLM。
+fn register_digest_hook(
+    ctx: &Context,
+    store: Arc<MemoryStore>,
+    digest_every: usize,
+) -> CoreResult<EffectHandle> {
+    ctx.on("agent/status", move |payload| {
+        let Some(payload) = payload.downcast_ref::<AgentStatusPayload>() else {
+            return;
+        };
+        if payload.status != AgentStatus::Idle {
+            return;
+        }
+        let Some(session) = current_initiator().map(|agent| agent.session().clone()) else {
+            return;
+        };
+        let agent_id = payload.agent_id.clone();
+        let store = store.clone();
+        tokio::spawn(async move {
+            let turn: u32 = store
+                .get_state(&format!("turn:{agent_id}"))
+                .ok()
+                .flatten()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let done: u32 = store
+                .get_state(&format!("digested_turn:{agent_id}"))
+                .ok()
+                .flatten()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            if turn.saturating_sub(done) < digest_every as u32 {
+                return;
+            }
+            let transcript = transcript_text(&session);
+            if let Err(error) = store.digest(&transcript, now_ms()).await {
+                eprintln!("[memory] digest 失败: {error}");
+                return;
+            }
+            let _ = store.set_state(&format!("digested_turn:{agent_id}"), &turn.to_string());
+        });
+    })
+}
+
+/// 会话日志 → 完整转录（digest 输入；turn 边界打标）。
+fn transcript_text(session: &dsh_session::Session) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for event in session.events() {
+        match &event.data {
+            SessionEventData::TurnStart { turn } => lines.push(format!("— turn {turn} —")),
+            SessionEventData::UserMessage(message) => {
+                lines.push(format!("用户: {}", message.content));
+            }
+            SessionEventData::AssistantMessage { message, .. } => {
+                lines.push(format!("助手: {}", message.text()));
+            }
+            _ => {}
+        }
+    }
+    lines.join("\n")
 }
 
 /// 请求里最后一条用户消息文本（recall 查询）。
@@ -443,7 +622,7 @@ async fn build_memory_section(store: &MemoryStore, query: Option<&str>) -> Optio
     }
 }
 
-/// 插件主体（apply 时打开存储 + 注册四工具 + 挂 agent 读/写挂钩）。
+/// 插件主体（apply 时打开存储 + 注册四工具 + 挂 agent 读/写/digest 挂钩）。
 #[derive(Default)]
 pub struct MemoryPlugin;
 
@@ -470,12 +649,18 @@ impl Plugin for MemoryPlugin {
         registry.register(Arc::new(RememberTool))?;
         registry.register(Arc::new(InventoryTool))?;
         registry.register(Arc::new(DemoteTool))?;
-        // M2：agent 读/写挂钩（随 fiber 卸载自动失效）
+        // M2/M3：agent 读/写/会话末挂钩（随 fiber 卸载自动失效）
         let store = ctx
             .get::<MemoryStore>()
             .map_err(|_| CoreError::ServiceNotFound("memory"))?;
         register_write_hook(ctx, store.clone())?;
-        register_read_hook(ctx, store)?;
+        register_read_hook(
+            ctx,
+            store.clone(),
+            config.max_context_chars,
+            config.keep_tail,
+        )?;
+        register_digest_hook(ctx, store, config.digest_every)?;
         Ok(())
     }
 }

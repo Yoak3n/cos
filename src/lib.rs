@@ -17,7 +17,7 @@ use dsh_llm::{ChunkDelta, LlmAdapter, Message, StreamChunk, ToolCall, UserMessag
 use dsh_llm_mock::{MockAdapter, MockReply};
 use dsh_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use dsh_loader::{self as loader, Profile};
-use dsh_memory::MemoryLlmProvider;
+use dsh_memory::{MemoryLlmProvider, MemoryStore};
 use dsh_session::{
     AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, load_jsonl, save_jsonl,
 };
@@ -236,6 +236,14 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
         }
     }
 
+    // 会话末 digest 收尾（M3，记忆插件装配时）：统计 + 转录 → 卡三段注记（慢路径）
+    if let Ok(store) = root.get::<MemoryStore>() {
+        let transcript = transcript_of(agent.session());
+        if let Err(error) = store.digest(&transcript, dsh_memory::now_ms()).await {
+            eprintln!("[memory] 会话末 digest 失败: {error}");
+        }
+    }
+
     // 优雅退出：apply 逆序卸载（审计）
     let unload_order: Vec<String> = app
         .instances()
@@ -263,4 +271,24 @@ async fn wait_for_cancel(flag: Arc<AtomicBool>) {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+}
+
+/// 会话日志 → 完整转录（会话末 digest 输入；turn 边界打标）。
+fn transcript_of(session: &dsh_session::Session) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for event in session.events() {
+        match &event.data {
+            dsh_session::SessionEventData::TurnStart { turn } => {
+                lines.push(format!("— turn {turn} —"));
+            }
+            dsh_session::SessionEventData::UserMessage(message) => {
+                lines.push(format!("用户: {}", message.content));
+            }
+            dsh_session::SessionEventData::AssistantMessage { message, .. } => {
+                lines.push(format!("助手: {}", message.text()));
+            }
+            _ => {}
+        }
+    }
+    lines.join("\n")
 }
