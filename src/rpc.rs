@@ -101,6 +101,7 @@ where
                         "reply": summary.reply,
                         "tools": summary.tool_trace,
                         "cancelled": summary.cancelled,
+                        "error": summary.error,
                     }
                 })
             }

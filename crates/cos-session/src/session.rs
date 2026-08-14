@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cos_llm::Message;
+use cos_llm::{Message, ToolResultMessage};
 
 use crate::types::{SessionEvent, SessionEventData};
 
@@ -93,9 +93,13 @@ impl Session {
                 SessionEventData::AssistantMessage { message, .. } => {
                     Some(Message::Assistant(message.clone()))
                 }
-                SessionEventData::ToolResult { message, .. } => {
-                    Some(Message::Tool(message.clone()))
-                }
+                SessionEventData::ToolResult {
+                    message, call_id, ..
+                } => Some(Message::Tool(ToolResultMessage {
+                    content: message.content.clone(),
+                    // 配对调用 id 必须随历史回流（OpenAI 协议 tool 消息需要 tool_call_id）
+                    call_id: Some(call_id.clone()),
+                })),
                 SessionEventData::Custom { name, data } => Some(Message::Custom {
                     name: name.clone(),
                     data: data.clone(),

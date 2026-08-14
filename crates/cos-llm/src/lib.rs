@@ -125,13 +125,17 @@ impl AssistantMessage {
 pub struct ToolResultMessage {
     /// 结果文本。
     pub content: String,
+    /// 配对调用 id（OpenAI 协议：`tool` 消息必须带 `tool_call_id`；None = 旧日志兼容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 impl ToolResultMessage {
-    /// 由文本构造工具结果消息。
+    /// 由文本构造工具结果消息（无配对调用 id）。
     pub fn new(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
+            call_id: None,
         }
     }
 }

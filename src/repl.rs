@@ -71,6 +71,9 @@ pub async fn serve_repl(
             println!("（已取消）");
             continue;
         }
+        if let Some(error) = &summary.error {
+            println!("[错误] {error}");
+        }
         println!("{}", summary.reply);
     }
     Ok(())

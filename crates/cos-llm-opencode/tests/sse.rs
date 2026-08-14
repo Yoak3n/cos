@@ -447,6 +447,10 @@ async fn assistant_tool_history_is_sent_back_in_body() {
             "工具参数字符串原样回传: {request}"
         );
         assert!(
+            request.contains("\"tool_call_id\":\"call_1\""),
+            "tool 消息必须带配对 tool_call_id（OpenAI 协议）: {request}"
+        );
+        assert!(
             request.contains("\"role\":\"tool\""),
             "工具结果消息应在: {request}"
         );
@@ -474,7 +478,10 @@ async fn assistant_tool_history_is_sent_back_in_body() {
                     arguments: r#"{"query":"咖啡"}"#.into(),
                 },
             }])),
-            Message::Tool(ToolResultMessage::new("无相关记忆")),
+            Message::Tool(ToolResultMessage {
+                content: "无相关记忆".into(),
+                call_id: Some("call_1".into()),
+            }),
         ],
         tools: vec![],
     };

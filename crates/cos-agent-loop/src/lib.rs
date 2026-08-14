@@ -514,6 +514,7 @@ impl AgentCore {
                 call_id: call.call_id.clone(),
                 message: cos_llm::ToolResultMessage {
                     content: outcome.content.clone(),
+                    call_id: Some(call.call_id.clone()),
                 },
                 error: outcome.error.clone(),
             });

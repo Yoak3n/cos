@@ -22,8 +22,8 @@ use cos_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use cos_loader::{self as loader, Profile};
 use cos_memory::MemoryStore;
 use cos_session::{
-    AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionEventData, SessionHeader, load_jsonl,
-    save_jsonl,
+    AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionEventData, SessionHeader,
+    TurnEndReason, load_jsonl, save_jsonl,
 };
 use cos_shell::provide_local_shell;
 use cos_system_prompt::PromptSections;
@@ -159,6 +159,8 @@ pub struct TurnSummary {
     pub tool_trace: Vec<String>,
     /// 是否被取消信号中断。
     pub cancelled: bool,
+    /// turn 失败原因（`turn/end` 记 Error 时；None = 正常）。
+    pub error: Option<String>,
 }
 
 /// 装配：内置服务 + LLM 注册表 + 插件树 + 主 agent（三种形态共用）。
@@ -329,6 +331,7 @@ fn summarize_turn(session: &cos_session::Session, turn: u32, cancelled: bool) ->
     let mut reply = String::new();
     let mut calls: Vec<(String, String)> = Vec::new(); // (call_id, 显示)
     let mut results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut error = None;
     for event in session.events() {
         match &event.data {
             SessionEventData::ToolCall {
@@ -359,6 +362,13 @@ fn summarize_turn(session: &cos_session::Session, turn: u32, cancelled: bool) ->
                     reply.push_str(&text);
                 }
             }
+            SessionEventData::TurnEnd {
+                turn: t,
+                reason: TurnEndReason::Error { message },
+            } if *t == turn => {
+                // 诚实出口：turn 失败原因浮出（工具结果回流后模型调用失败等）
+                error = Some(message.clone());
+            }
             _ => {}
         }
     }
@@ -374,6 +384,7 @@ fn summarize_turn(session: &cos_session::Session, turn: u32, cancelled: bool) ->
         reply,
         tool_trace,
         cancelled,
+        error,
     }
 }
 
@@ -486,4 +497,63 @@ fn transcript_of(session: &cos_session::Session) -> String {
         }
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summarize_turn;
+    use cos_llm::ToolResultMessage;
+    use cos_session::{Session, SessionEventData, TurnEndReason};
+
+    /// 工具结果回流后模型调用失败 → turn/end 记 Error → 摘要必须浮出（诚实出口）。
+    #[test]
+    fn summarize_turn_surfaces_turn_error() {
+        let session = Session::new("t");
+        session.append(SessionEventData::TurnStart { turn: 1 });
+        session.append(SessionEventData::ToolCall {
+            turn: 1,
+            step: 1,
+            call_id: "c1".into(),
+            name: "recall".into(),
+            arguments: "{}".into(),
+        });
+        session.append(SessionEventData::ToolResult {
+            turn: 1,
+            step: 1,
+            call_id: "c1".into(),
+            message: ToolResultMessage {
+                content: "无相关记忆".into(),
+                call_id: Some("c1".into()),
+            },
+            error: None,
+        });
+        session.append(SessionEventData::TurnEnd {
+            turn: 1,
+            reason: TurnEndReason::Error {
+                message: "HTTP 400: tool_call_id 缺失".into(),
+            },
+        });
+
+        let summary = summarize_turn(&session, 1, false);
+        assert!(summary.reply.is_empty());
+        assert_eq!(
+            summary.error.as_deref(),
+            Some("HTTP 400: tool_call_id 缺失"),
+            "turn 失败原因必须浮出"
+        );
+        assert_eq!(summary.tool_trace.len(), 1, "工具轨迹仍应显示");
+    }
+
+    /// 正常完成的 turn → error 为 None。
+    #[test]
+    fn summarize_turn_completed_has_no_error() {
+        let session = Session::new("t");
+        session.append(SessionEventData::TurnStart { turn: 1 });
+        session.append(SessionEventData::TurnEnd {
+            turn: 1,
+            reason: TurnEndReason::Completed,
+        });
+        let summary = summarize_turn(&session, 1, false);
+        assert!(summary.error.is_none());
+    }
 }

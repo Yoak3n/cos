@@ -233,7 +233,7 @@ impl OpencodeAdapter {
                 }
                 Message::Assistant(assistant) => {
                     // 工具调用轮：assistant 历史必须带 tool_calls（OpenAI 协议，
-                    // 否则后续 tool 结果消息会被网关拒绝/丢失）
+                    // 否则后续 tool 结果消息会被网关拒绝/丢失）；无文本时 content 置 null
                     let tool_calls: Vec<serde_json::Value> = assistant
                         .content
                         .iter()
@@ -249,9 +249,14 @@ impl OpencodeAdapter {
                             ContentBlock::Text { .. } => None,
                         })
                         .collect();
+                    let text = assistant.text();
                     let mut value = serde_json::json!({
                         "role": "assistant",
-                        "content": assistant.text(),
+                        "content": if text.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::json!(text)
+                        },
                     });
                     if !tool_calls.is_empty() {
                         value["tool_calls"] = serde_json::json!(tool_calls);
@@ -259,7 +264,12 @@ impl OpencodeAdapter {
                     value
                 }
                 Message::Tool(tool) => {
-                    serde_json::json!({ "role": "tool", "content": tool.content })
+                    // OpenAI 协议：tool 消息必须带 tool_call_id（配对 assistant 的调用）
+                    let mut value = serde_json::json!({ "role": "tool", "content": tool.content });
+                    if let Some(call_id) = &tool.call_id {
+                        value["tool_call_id"] = serde_json::json!(call_id);
+                    }
+                    value
                 }
                 Message::Custom { name, data } => serde_json::json!({
                     "role": "user",

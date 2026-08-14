@@ -114,7 +114,14 @@ fn derive_messages_projects_surface_only() {
         other => panic!("期望 Assistant，实际 {other:?}"),
     }
     match &messages[2] {
-        Message::Tool(tool) => assert_eq!(tool.content, "ok"),
+        Message::Tool(tool) => {
+            assert_eq!(tool.content, "ok");
+            assert_eq!(
+                tool.call_id.as_deref(),
+                Some("c1"),
+                "tool 消息应携带配对调用 id（协议回流）"
+            );
+        }
         other => panic!("期望 Tool，实际 {other:?}"),
     }
     match &messages[3] {
