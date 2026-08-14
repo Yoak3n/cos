@@ -77,3 +77,8 @@ cargo deny check   # CI 内执行（本地需 cargo-deny）
   已产出后失败不切换（防内容重复）；记忆插件按 `llm:` 配置从注册表解析（缺省 "default"），
   cos `--agent-llm <id>` 指定主 agent 提供商/链；测试 11 新增（切换/不切换/全败/注册表/
   插件装配 fail loud）
+- LLM 可输入内容标注 + 图片传输 ✅ —— `InputContent { Text, Image }`：适配器声明能力
+  （`LlmAdapter::input_content`，缺省 text；opencode 配置 `input_content: [text, image]` 声明
+  视觉模型），`FallbackAdapter` 能力 = 成员并集，注册表 `capabilities/supports/by_capability`
+  支持按能力路由；`UserMessage.images` 承载图片（URL/data URL，serde default 兼容旧 JSONL），
+  opencode 适配器映射为 OpenAI 多部分 content（text + image_url）

@@ -35,17 +35,36 @@ pub enum Role {
 /// 用户消息（模型可见输入；`source` 等 dsh 字段 P4 随 agent 补齐）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserMessage {
-    /// 消息文本。
+    /// 消息文本（text 部分）。
     pub content: String,
+    /// 附加图片（URL 或 data URL；空 = 纯文本）。旧 JSONL 缺省为空，向后兼容。
+    #[serde(default)]
+    pub images: Vec<String>,
 }
 
 impl UserMessage {
-    /// 由文本构造用户消息。
+    /// 由文本构造用户消息（无图片）。
     pub fn new(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
+            images: Vec::new(),
         }
     }
+
+    /// 是否携带图片（适配器按此映射 content parts）。
+    pub fn has_images(&self) -> bool {
+        !self.images.is_empty()
+    }
+}
+
+/// LLM 可接收的输入内容类型（能力标注，如 text / image）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputContent {
+    /// 纯文本。
+    Text,
+    /// 图片（URL / data URL）。
+    Image,
 }
 
 /// 模型请求的工具调用（参数为模型产出的原始 JSON 字符串，未解析）。
@@ -217,6 +236,13 @@ pub trait LlmAdapter: Send + Sync {
     /// 适配器 id（同 provider 路由名）。
     fn id(&self) -> &str;
 
+    /// 可接收的输入内容类型（能力标注；缺省仅 text）。
+    ///
+    /// 适配器可按配置/模型声明（如视觉模型 → `[Text, Image]`）；后备链 = 成员并集。
+    fn input_content(&self) -> &[InputContent] {
+        &[InputContent::Text]
+    }
+
     /// 以流式方式执行一次请求。
     fn stream(&self, request: &LlmRequest) -> LlmStream;
 }
@@ -377,7 +403,7 @@ impl LlmRegistry {
                 "后备链 '{chain_id}' 无可用的提供商"
             )));
         }
-        Ok(Arc::new(FallbackAdapter { adapters }))
+        Ok(Arc::new(FallbackAdapter::new(adapters)))
     }
 
     /// 按 id 解析：先单提供商，再后备链（消费者统一入口）。
@@ -386,6 +412,43 @@ impl LlmRegistry {
             return Ok(adapter);
         }
         self.resolve(id)
+    }
+
+    /// 某 id（提供商或链）的可输入内容能力；链 = 成员并集。
+    pub fn capabilities(&self, id: &str) -> Option<Vec<InputContent>> {
+        if let Some(adapter) = self.get(id) {
+            return Some(adapter.input_content().to_vec());
+        }
+        let ids = self.chains.lock().unwrap().get(id)?.clone();
+        let providers = self.providers.lock().unwrap();
+        let mut union: Vec<InputContent> = Vec::new();
+        for provider in &ids {
+            if let Some(adapter) = providers.get(provider) {
+                for content in adapter.input_content() {
+                    if !union.contains(content) {
+                        union.push(*content);
+                    }
+                }
+            }
+        }
+        Some(union)
+    }
+
+    /// 某 id 是否支持指定输入内容类型。
+    pub fn supports(&self, id: &str, content: InputContent) -> bool {
+        self.capabilities(id)
+            .is_some_and(|caps| caps.contains(&content))
+    }
+
+    /// 按能力过滤已注册提供商 id（路由查询；不含链）。
+    pub fn by_capability(&self, content: InputContent) -> Vec<String> {
+        self.providers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, adapter)| adapter.input_content().contains(&content))
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 }
 
@@ -415,15 +478,45 @@ enum FallbackPhase {
 /// 已产出后失败 → 原样传播（不切换，避免内容重复）。
 ///
 /// 纯 futures 组合子（无 spawn、无 tokio 依赖），`LlmAdapter` 对象安全接缝内实现。
+/// 能力标注 = 成员并集（[`LlmAdapter::input_content`]）。
 #[derive(Clone)]
 pub struct FallbackAdapter {
     /// 按优先级排列的适配器（主在前）。
-    pub adapters: Vec<Arc<dyn LlmAdapter>>,
+    adapters: Vec<Arc<dyn LlmAdapter>>,
+    /// 成员能力并集（构造时计算）。
+    input_content: Vec<InputContent>,
+}
+
+impl FallbackAdapter {
+    /// 由按优先级排列的适配器构造（能力 = 成员并集）。
+    pub fn new(adapters: Vec<Arc<dyn LlmAdapter>>) -> Self {
+        let mut input_content: Vec<InputContent> = Vec::new();
+        for adapter in &adapters {
+            for content in adapter.input_content() {
+                if !input_content.contains(content) {
+                    input_content.push(*content);
+                }
+            }
+        }
+        Self {
+            adapters,
+            input_content,
+        }
+    }
+
+    /// 链成员（主在前）。
+    pub fn adapters(&self) -> &[Arc<dyn LlmAdapter>] {
+        &self.adapters
+    }
 }
 
 impl LlmAdapter for FallbackAdapter {
     fn id(&self) -> &str {
         "fallback"
+    }
+
+    fn input_content(&self) -> &[InputContent] {
+        &self.input_content
     }
 
     fn stream(&self, request: &LlmRequest) -> LlmStream {

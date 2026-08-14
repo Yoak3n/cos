@@ -138,3 +138,12 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   原 `MemoryLlmProvider` 服务删除（回归测试改注册表装配）。cos 无 `--llm-*` 时注册
   "default" = 空脚本 mock（记忆失败软降级不变）；`--agent-llm <id>` 指定主 agent 提供商/链，
   `--llm-*` 仍注册 "default" 快捷方式。
+- **可输入内容标注（text/image）**：`cos_llm::InputContent { Text, Image }`（serde lowercase，
+  可扩展）；`LlmAdapter::input_content() -> &[InputContent]` 缺省 `[Text]`（对象安全、零破坏），
+  视觉模型经配置声明 `input_content: [text, image]`（opencode 提供商配置透传）；
+  `FallbackAdapter::new` 计算成员**并集**。注册表查询面：`capabilities(id)`（提供商或链，
+  链 = 并集）、`supports(id, content)`、`by_capability(content)`（提供商路由查询）。
+  图片传输：`UserMessage.images: Vec<String>`（URL/data URL，`#[serde(default)]` → 旧 JSONL
+  兼容、不 bump 版本）；opencode 适配器把带图用户消息映射为 OpenAI 多部分 content
+  （`[{type:text}, {type:image_url}]`），纯文本仍为字符串（线上形态不变）。
+  能力标注与传输解耦：标注用于路由/校验，传输由消息承载。

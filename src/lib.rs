@@ -150,6 +150,7 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
                 api_key: cfg.api_key.clone(),
                 model: cfg.model.clone(),
                 streaming: cfg.streaming,
+                input_content: vec![cos_llm::InputContent::Text],
             })),
         )?;
     } else {

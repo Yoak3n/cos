@@ -18,7 +18,8 @@
 use std::sync::Arc;
 
 use cos_llm::{
-    ChunkDelta, LlmAdapter, LlmError, LlmRequest, LlmStream, Message, StreamChunk, TokenUsage,
+    ChunkDelta, InputContent, LlmAdapter, LlmError, LlmRequest, LlmStream, Message, StreamChunk,
+    TokenUsage,
 };
 use futures::StreamExt;
 use serde::Deserialize;
@@ -33,17 +34,26 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
         model: String,
         #[serde(default = "default_streaming")]
         streaming: bool,
+        /// 可输入内容标注（缺省 text；视觉模型声明 image）。
+        #[serde(default)]
+        input_content: Vec<InputContent>,
     }
     fn default_streaming() -> bool {
         true
     }
     let config: ProviderConfig = serde_json::from_value(config.clone())
         .map_err(|error| LlmError::Failure(format!("opencode 提供商配置无效: {error}")))?;
+    let input_content = if config.input_content.is_empty() {
+        vec![InputContent::Text]
+    } else {
+        config.input_content
+    };
     Ok(Arc::new(OpencodeAdapter::new(OpencodeConfig {
         base_url: config.base_url,
         api_key: config.api_key,
         model: config.model,
         streaming: config.streaming,
+        input_content,
     })))
 }
 
@@ -62,6 +72,8 @@ pub struct OpencodeConfig {
     /// 某些网关（opencode zen/go）流式只出 `reasoning_content` 且时有 500，
     /// 非流式反而给出完整 `content` —— 此时关掉流式更稳。
     pub streaming: bool,
+    /// 可输入内容标注（`input_content()` 依据；视觉模型含 [`InputContent::Image`]）。
+    pub input_content: Vec<InputContent>,
 }
 
 /// OpenAI 兼容适配器（流式优先、非流式自动兜底）。
@@ -164,7 +176,22 @@ impl OpencodeAdapter {
                     serde_json::json!({ "role": "system", "content": content })
                 }
                 Message::User(user) => {
-                    serde_json::json!({ "role": "user", "content": user.content })
+                    // 带图片 → OpenAI 多部分 content（text + image_url）；纯文本 → 字符串
+                    if user.has_images() {
+                        let mut parts: Vec<serde_json::Value> = vec![serde_json::json!({
+                            "type": "text",
+                            "text": user.content
+                        })];
+                        for image in &user.images {
+                            parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": image }
+                            }));
+                        }
+                        serde_json::json!({ "role": "user", "content": parts })
+                    } else {
+                        serde_json::json!({ "role": "user", "content": user.content })
+                    }
                 }
                 Message::Assistant(assistant) => {
                     serde_json::json!({ "role": "assistant", "content": assistant.text() })
@@ -211,6 +238,10 @@ impl OpencodeAdapter {
 impl LlmAdapter for OpencodeAdapter {
     fn id(&self) -> &str {
         "opencode"
+    }
+
+    fn input_content(&self) -> &[InputContent] {
+        &self.config.input_content
     }
 
     fn stream(&self, request: &LlmRequest) -> LlmStream {

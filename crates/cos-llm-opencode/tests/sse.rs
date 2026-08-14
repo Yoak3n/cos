@@ -2,7 +2,7 @@
 //! 流式文本增量 + usage 映射 + [DONE] 收束；服务端失败（5xx / error 块）在无产出时
 //! 自动非流式兜底；4xx 不重试原样报错。
 
-use cos_llm::{ChunkDelta, LlmAdapter, LlmRequest, Message, TokenUsage, UserMessage};
+use cos_llm::{ChunkDelta, InputContent, LlmAdapter, LlmRequest, Message, TokenUsage, UserMessage};
 use cos_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,6 +14,7 @@ fn adapter(port: u16) -> OpencodeAdapter {
         api_key: "test-key".into(),
         model: "deepseek-v4-flash-free".into(),
         streaming: true,
+        input_content: vec![InputContent::Text],
     })
 }
 
@@ -282,4 +283,55 @@ async fn fallback_failure_yields_error() {
     assert!(error.to_string().contains("兜底"), "{error}");
     assert!(stream.next().await.is_none());
     server.await.unwrap();
+}
+
+/// 带图片的用户消息 → OpenAI 多部分 content（text + image_url parts）。
+#[tokio::test]
+async fn image_message_maps_to_image_url_parts() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 16384];
+        let n = socket.read(&mut buf).await.unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]).to_string();
+        assert!(request.contains("\"type\":\"text\""), "{request}");
+        assert!(
+            request.contains("\"type\":\"image_url\""),
+            "应映射为 image_url part: {request}"
+        );
+        assert!(
+            request.contains("\"image_url\":{\"url\":\"https://example.com/cat.png\"}"),
+            "图片 URL 应进 image_url.url: {request}"
+        );
+        socket
+            .write_all(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+                 {\"id\":\"c\",\"object\":\"chat.completion\",\"model\":\"m\",\
+                 \"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}],\
+                 \"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}"
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.shutdown().await.unwrap();
+    });
+
+    let mut user = UserMessage::new("这只猫叫什么？");
+    user.images.push("https://example.com/cat.png".to_string());
+    let request = LlmRequest {
+        system: None,
+        messages: vec![Message::User(user)],
+        tools: vec![],
+    };
+    let adapter = adapter(port);
+    let mut stream = adapter.stream(&request);
+    while let Some(item) = stream.next().await {
+        assert!(item.is_ok(), "{item:?}");
+    }
+    server.await.unwrap();
+
+    // 能力标注：纯文本适配器缺省只声明 text
+    assert!(adapter.input_content().contains(&InputContent::Text));
+    assert!(!adapter.input_content().contains(&InputContent::Image));
 }

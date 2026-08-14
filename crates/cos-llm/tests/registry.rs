@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use cos_core::Context;
 use cos_llm::{
-    ChunkDelta, LlmAdapter, LlmError, LlmRegistry, LlmRequest, LlmStream, StreamChunk, UserMessage,
+    ChunkDelta, FallbackAdapter, InputContent, LlmAdapter, LlmError, LlmRegistry, LlmRequest,
+    LlmStream, StreamChunk, UserMessage,
 };
 use cos_llm_mock::{MockAdapter, MockReply};
 use futures::StreamExt;
@@ -38,12 +39,10 @@ async fn collect_text(adapter: Arc<dyn LlmAdapter>) -> (String, Vec<LlmError>) {
 
 #[tokio::test]
 async fn fallback_switches_to_next_on_pre_output_error() {
-    let chain = Arc::new(cos_llm::FallbackAdapter {
-        adapters: vec![
-            Arc::new(MockAdapter::new("fail", vec![])), // 脚本耗尽 → 立即 Err
-            Arc::new(MockAdapter::new("ok", vec![MockReply::text("你好")])),
-        ],
-    });
+    let chain = Arc::new(FallbackAdapter::new(vec![
+        Arc::new(MockAdapter::new("fail", vec![])), // 脚本耗尽 → 立即 Err
+        Arc::new(MockAdapter::new("ok", vec![MockReply::text("你好")])),
+    ]));
     let (text, errors) = collect_text(chain).await;
     assert_eq!(text, "你好", "主失败应自动切换到后备");
     assert!(errors.is_empty());
@@ -51,12 +50,10 @@ async fn fallback_switches_to_next_on_pre_output_error() {
 
 #[tokio::test]
 async fn fallback_switches_on_empty_stream() {
-    let chain = Arc::new(cos_llm::FallbackAdapter {
-        adapters: vec![
-            Arc::new(EmptyAdapter),
-            Arc::new(MockAdapter::new("ok", vec![MockReply::text("兜底")])),
-        ],
-    });
+    let chain = Arc::new(FallbackAdapter::new(vec![
+        Arc::new(EmptyAdapter),
+        Arc::new(MockAdapter::new("ok", vec![MockReply::text("兜底")])),
+    ]));
     let (text, errors) = collect_text(chain).await;
     assert_eq!(text, "兜底", "空流同样视为未产出，应切换");
     assert!(errors.is_empty());
@@ -64,12 +61,10 @@ async fn fallback_switches_on_empty_stream() {
 
 #[tokio::test]
 async fn fallback_propagates_error_when_all_fail() {
-    let chain = Arc::new(cos_llm::FallbackAdapter {
-        adapters: vec![
-            Arc::new(MockAdapter::new("fail1", vec![])),
-            Arc::new(MockAdapter::new("fail2", vec![])),
-        ],
-    });
+    let chain = Arc::new(FallbackAdapter::new(vec![
+        Arc::new(MockAdapter::new("fail1", vec![])),
+        Arc::new(MockAdapter::new("fail2", vec![])),
+    ]));
     let (text, errors) = collect_text(chain).await;
     assert!(text.is_empty());
     assert_eq!(errors.len(), 1, "全部失败 → 交付最后错误");
@@ -79,12 +74,10 @@ async fn fallback_propagates_error_when_all_fail() {
 #[tokio::test]
 async fn fallback_propagates_mid_stream_error_without_switching() {
     // 已产出 chunk 后失败：原样传播，不切换到后备（避免内容重复）
-    let chain = Arc::new(cos_llm::FallbackAdapter {
-        adapters: vec![
-            Arc::new(MidStreamErrorAdapter),
-            Arc::new(MockAdapter::new("backup", vec![MockReply::text("B")])),
-        ],
-    });
+    let chain = Arc::new(FallbackAdapter::new(vec![
+        Arc::new(MidStreamErrorAdapter),
+        Arc::new(MockAdapter::new("backup", vec![MockReply::text("B")])),
+    ]));
     let (text, errors) = collect_text(chain).await;
     assert_eq!(text, "A", "已产出后失败不得切换到后备（避免内容重复）");
     assert_eq!(errors.len(), 1);
@@ -205,4 +198,67 @@ async fn registry_build_uses_inventory_factory() {
             .is_err(),
         "同名工厂拒绝"
     );
+}
+
+/// 视觉适配器（测试桩：声明 text + image）。
+struct VisionAdapter;
+
+impl LlmAdapter for VisionAdapter {
+    fn id(&self) -> &str {
+        "vision"
+    }
+
+    fn input_content(&self) -> &[InputContent] {
+        &[InputContent::Text, InputContent::Image]
+    }
+
+    fn stream(&self, _request: &LlmRequest) -> LlmStream {
+        Box::pin(futures::stream::empty())
+    }
+}
+
+#[tokio::test]
+async fn registry_capabilities_supports_and_by_capability() {
+    let ctx = Context::root();
+    let registry = LlmRegistry::new(&ctx);
+    registry
+        .register("text-only", Arc::new(MockAdapter::new("mock-t", vec![])))
+        .unwrap();
+    registry
+        .register("vision", Arc::new(VisionAdapter))
+        .unwrap();
+
+    // 缺省能力 = text；视觉适配器声明 text + image
+    assert!(registry.supports("text-only", InputContent::Text));
+    assert!(!registry.supports("text-only", InputContent::Image));
+    assert!(registry.supports("vision", InputContent::Image));
+
+    // 按能力路由查询
+    assert_eq!(registry.by_capability(InputContent::Image), vec!["vision"]);
+    assert!(
+        registry
+            .by_capability(InputContent::Text)
+            .contains(&"text-only".to_string())
+    );
+
+    // 链能力 = 成员并集
+    registry
+        .register_chain("c1", vec!["text-only".to_string(), "vision".to_string()])
+        .unwrap();
+    let caps = registry.capabilities("c1").unwrap();
+    assert!(caps.contains(&InputContent::Text) && caps.contains(&InputContent::Image));
+
+    // FallbackAdapter::new 同样计算并集
+    let fallback = FallbackAdapter::new(vec![
+        Arc::new(MockAdapter::new("t", vec![])),
+        Arc::new(VisionAdapter),
+    ]);
+    assert_eq!(
+        fallback.input_content(),
+        &[InputContent::Text, InputContent::Image]
+    );
+
+    // 未知 id
+    assert!(registry.capabilities("nope").is_none());
+    assert!(!registry.supports("nope", InputContent::Text));
 }

@@ -14,6 +14,8 @@
           model: "deepseek-v4-flash"
           api_key: "sk-REPLACE_ME"
           streaming: false
+          # 可输入内容标注（缺省 text；视觉模型声明 image）：
+          # input_content: [text, image]
       - id: zen-free
         kind: opencode
         config:
