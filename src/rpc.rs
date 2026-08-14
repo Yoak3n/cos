@@ -142,6 +142,14 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 return respond(false, None, Some("message 缺失".into()));
             }
             let message_id = message_id(request, next_id);
+            if agent.has_queued_message(&message_id) {
+                // fail loud：重复 id 会令 cancel_message 产生歧义，排队时直接拒绝
+                return respond(
+                    false,
+                    None,
+                    Some(format!("message id 已存在于队列: {message_id}")),
+                );
+            }
             let user = user_message(request, &message_id);
             // pi 语义：agent 正在处理时未指定 streamingBehavior → 拒绝
             if agent.status() == AgentStatus::Running {
@@ -174,6 +182,13 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 return respond(false, None, Some("message 缺失".into()));
             }
             let message_id = message_id(request, next_id);
+            if agent.has_queued_message(&message_id) {
+                return respond(
+                    false,
+                    None,
+                    Some(format!("message id 已存在于队列: {message_id}")),
+                );
+            }
             agent.steer(user_message(request, &message_id));
             respond(true, Some(json!({"messageId": message_id})), None)
         }
@@ -187,6 +202,13 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 return respond(false, None, Some("message 缺失".into()));
             }
             let message_id = message_id(request, next_id);
+            if agent.has_queued_message(&message_id) {
+                return respond(
+                    false,
+                    None,
+                    Some(format!("message id 已存在于队列: {message_id}")),
+                );
+            }
             agent.followup(user_message(request, &message_id));
             respond(true, Some(json!({"messageId": message_id})), None)
         }
@@ -583,4 +605,94 @@ async fn write_line<W: AsyncWrite + Unpin>(
     writer.write_all(b"\n").await?;
     writer.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use cos_session::SessionEventData;
+    use serde_json::{Value, json};
+
+    use super::dispatch;
+    use crate::{RunConfig, assemble};
+
+    fn base_config() -> RunConfig {
+        RunConfig {
+            config_path: concat!(env!("CARGO_MANIFEST_DIR"), "/examples/demo.yml").into(),
+            dump_config: false,
+            session_id: "rpc-lib".into(),
+            prompt: None,
+            session_path: None,
+            cancel: None,
+            llm: None,
+            agent_llm: None,
+        }
+    }
+
+    /// 重复 id 排队 → fail loud；不同 id 正常排队并可取消。
+    /// 确定性：连续同步 dispatch，驱动器未调度，消息都还在队列中。
+    #[tokio::test]
+    async fn rpc_rejects_duplicate_queued_message_id() {
+        let assembled = assemble(&base_config()).await.unwrap();
+        let next_id = AtomicU64::new(0);
+        let cmd = |value: Value| {
+            dispatch(
+                value["type"].as_str().unwrap(),
+                &value,
+                &assembled,
+                &next_id,
+            )
+        };
+
+        // 第一条（idle → 立即处理，但驱动器未调度，仍在队列）
+        let r1 = cmd(json!({"id": "dup", "type": "prompt", "message": "任务A"}));
+        assert_eq!(r1["success"], true);
+        assert_eq!(r1["data"]["messageId"], "dup");
+
+        // 同一 id 再排队 → 拒绝（fail loud）
+        let r2 = cmd(json!({
+            "id": "dup",
+            "type": "prompt",
+            "message": "任务B",
+            "streamingBehavior": "followUp"
+        }));
+        assert_eq!(r2["success"], false, "{r2}");
+        assert!(
+            r2["error"].as_str().unwrap().contains("已存在于队列"),
+            "{r2}"
+        );
+
+        // 不同 id → 正常排队
+        let r3 = cmd(json!({
+            "id": "ok",
+            "type": "prompt",
+            "message": "任务C",
+            "streamingBehavior": "followUp"
+        }));
+        assert_eq!(r3["success"], true);
+        assert_eq!(r3["data"]["messageId"], "ok");
+
+        // 取消排队的 ok → 最终只有任务A 被处理
+        let r4 = cmd(json!({"type": "cancel_message", "messageId": "ok"}));
+        assert_eq!(r4["success"], true);
+        assert_eq!(r4["data"]["cancelled"], true);
+
+        assembled.agent.when_idle().await;
+        let texts: Vec<String> = assembled
+            .agent
+            .session()
+            .events()
+            .iter()
+            .filter_map(|event| match &event.data {
+                SessionEventData::UserMessage(message) => Some(message.content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["任务A"],
+            "重复 id 被拒、ok 被取消 → 只剩任务A: {texts:?}"
+        );
+    }
 }

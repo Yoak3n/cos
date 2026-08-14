@@ -91,6 +91,13 @@ impl Inbox {
         false
     }
 
+    /// 队列中是否存在指定 id 的消息（两个队列都查；排队去重用）。
+    pub fn contains_id(&self, id: &str) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.next_step.iter().any(|m| m.id.as_deref() == Some(id))
+            || inner.next_turn.iter().any(|m| m.id.as_deref() == Some(id))
+    }
+
     /// 是否有任何待处理消息。
     pub fn has_pending(&self) -> bool {
         let inner = self.inner.lock().unwrap();
@@ -129,12 +136,16 @@ mod tests {
         inbox.push(InboxTarget::NextStep, msg("s-1", "steering"));
 
         // next-step 优先
+        assert!(inbox.contains_id("s-1"), "排队去重检查应命中 next-step");
         assert!(inbox.remove_by_id("s-1"));
         assert!(!inbox.remove_by_id("s-1"), "重复移除应为 false");
+        assert!(!inbox.contains_id("s-1"), "移除后不应再命中");
 
         // next-turn 命中
+        assert!(inbox.contains_id("m-2"));
         assert!(inbox.remove_by_id("m-2"));
         assert_eq!(inbox.next_turn_len(), 2);
+        assert!(!inbox.contains_id("m-2"));
 
         // 已消费/不存在的 id → false
         assert!(!inbox.remove_by_id("m-2"));

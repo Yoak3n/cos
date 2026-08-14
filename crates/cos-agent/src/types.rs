@@ -206,6 +206,11 @@ pub trait AgentTrait: Send + Sync {
         false
     }
 
+    /// 队列中是否已有指定 id 的消息（排队去重检查；缺省 false）。
+    fn has_queued_message(&self, _id: &str) -> bool {
+        false
+    }
+
     /// 取消：清除排队（除非 keep_inbox）并中止活动 turn。
     fn cancel(&self, cause: cos_session::AbortCause, keep_inbox: bool);
 

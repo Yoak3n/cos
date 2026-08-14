@@ -53,7 +53,9 @@ cos --config cordis.yml --rpc [--session <id>] [--no-save]
 ### 取消排队消息
 
 `prompt`/`steer`/`follow_up` 的响应带 `data.messageId`（命令 `id` 即消息 id；缺省自动生成
-`m-<n>`）。处理中（agent 忙）排队的消息可精准取消；已开始处理的消息不在队列中，取消失败：
+`m-<n>`）。处理中（agent 忙）排队的消息可精准取消；已开始处理的消息不在队列中，取消失败。
+**排队去重**：id 已在队列中时重复排队会被拒绝（`success: false` + "message id 已存在于队列"），
+避免 `cancel_message` 产生歧义；已消费的 id 可以复用（队列中无同名消息即可）：
 
 ```json
 {"id": "req-2", "type": "prompt", "message": "任务A", "streamingBehavior": "followUp"}
