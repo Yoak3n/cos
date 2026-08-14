@@ -6,12 +6,12 @@ license.workspace = true
 description = "turn/step 驱动器，实现 cos-agent（P4）"
 
 [dependencies]
-cos-agent = { path = "../cos-agent" }
-cos-core = { path = "../cos-core" }
-cos-llm = { path = "../cos-llm" }
-cos-session = { path = "../cos-session" }
-cos-system-prompt = { path = "../cos-system-prompt" }
-cos-tools = { path = "../cos-tools" }
+cos-agent = { path = "../cos-agent", version = "0.1.0" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
+cos-llm = { path = "../cos-llm", version = "0.1.0" }
+cos-session = { path = "../cos-session", version = "0.1.0" }
+cos-system-prompt = { path = "../cos-system-prompt", version = "0.1.0" }
+cos-tools = { path = "../cos-tools", version = "0.1.0" }
 futures.workspace = true
 inventory.workspace = true
 serde_json.workspace = true
@@ -19,4 +19,4 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-cos-test-support = { path = "../cos-test-support" }
+cos-test-support = { path = "../cos-test-support", version = "0.1.0" }

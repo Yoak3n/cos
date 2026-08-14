@@ -9,7 +9,7 @@ description = "B 形态薄壳试点（P8）：plugin-todo 的独立 cdylib——
 crate-type = ["cdylib"]
 
 [dependencies]
-cos-contract = { path = "../../crates/cos-contract" }
-cos-tools = { path = "../../crates/cos-tools" }
+cos-contract = { path = "../../crates/cos-contract", version = "0.1.0" }
+cos-tools = { path = "../../crates/cos-tools", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true

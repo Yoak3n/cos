@@ -6,10 +6,10 @@ license.workspace = true
 description = "cordis.yml 解析、工厂解析、拓扑排序、挂载（P2）"
 
 [dependencies]
-cos-contract = { path = "../cos-contract" }
-cos-core = { path = "../cos-core" }
-cos-session = { path = "../cos-session" }
-cos-tools = { path = "../cos-tools" }
+cos-contract = { path = "../cos-contract", version = "0.1.0" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
+cos-session = { path = "../cos-session", version = "0.1.0" }
+cos-tools = { path = "../cos-tools", version = "0.1.0" }
 futures.workspace = true
 inventory.workspace = true
 libloading = "0.8"

@@ -6,27 +6,27 @@ license = "MIT"
 description = "cos CLI 宿主（插件化主干，A 形态）"
 
 [dependencies]
-cos-agent = { path = "crates/cos-agent" }
-cos-agent-loop = { path = "crates/cos-agent-loop" }
-cos-contract = { path = "crates/cos-contract" }
-cos-core = { path = "crates/cos-core" }
-cos-invariants = { path = "crates/cos-invariants" }
-cos-llm = { path = "crates/cos-llm" }
-cos-loader = { path = "crates/cos-loader" }
-cos-memory = { path = "crates/cos-memory" }
-cos-rpc = { path = "crates/cos-rpc" }
-cos-session = { path = "crates/cos-session" }
-cos-shell = { path = "crates/cos-shell" }
-cos-system-prompt = { path = "crates/cos-system-prompt" }
-cos-tools = { path = "crates/cos-tools" }
-plugin-bash = { path = "plugins/plugin-bash", optional = true }
-plugin-custom-provider = { path = "plugins/plugin-custom-provider", optional = true }
-plugin-deepseek = { path = "plugins/plugin-deepseek", optional = true }
-plugin-llm = { path = "plugins/plugin-llm", optional = true }
-plugin-memory = { path = "plugins/plugin-memory", optional = true }
-plugin-opencode = { path = "plugins/plugin-opencode", optional = true }
-plugin-rpc = { path = "plugins/plugin-rpc", optional = true }
-plugin-todo = { path = "plugins/plugin-todo", optional = true }
+cos-agent = { path = "crates/cos-agent", version = "0.1.0" }
+cos-agent-loop = { path = "crates/cos-agent-loop", version = "0.1.0" }
+cos-contract = { path = "crates/cos-contract", version = "0.1.0" }
+cos-core = { path = "crates/cos-core", version = "0.1.0" }
+cos-invariants = { path = "crates/cos-invariants", version = "0.1.0" }
+cos-llm = { path = "crates/cos-llm", version = "0.1.0" }
+cos-loader = { path = "crates/cos-loader", version = "0.1.0" }
+cos-memory = { path = "crates/cos-memory", version = "0.1.0" }
+cos-rpc = { path = "crates/cos-rpc", version = "0.1.0" }
+cos-session = { path = "crates/cos-session", version = "0.1.0" }
+cos-shell = { path = "crates/cos-shell", version = "0.1.0" }
+cos-system-prompt = { path = "crates/cos-system-prompt", version = "0.1.0" }
+cos-tools = { path = "crates/cos-tools", version = "0.1.0" }
+plugin-bash = { path = "plugins/plugin-bash", version = "0.1.0", optional = true }
+plugin-custom-provider = { path = "plugins/plugin-custom-provider", version = "0.1.0", optional = true }
+plugin-deepseek = { path = "plugins/plugin-deepseek", version = "0.1.0", optional = true }
+plugin-llm = { path = "plugins/plugin-llm", version = "0.1.0", optional = true }
+plugin-memory = { path = "plugins/plugin-memory", version = "0.1.0", optional = true }
+plugin-opencode = { path = "plugins/plugin-opencode", version = "0.1.0", optional = true }
+plugin-rpc = { path = "plugins/plugin-rpc", version = "0.1.0", optional = true }
+plugin-todo = { path = "plugins/plugin-todo", version = "0.1.0", optional = true }
 futures.workspace = true
 inventory.workspace = true
 serde_json.workspace = true
@@ -34,7 +34,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-cos-test-support = { path = "crates/cos-test-support" }
+cos-test-support = { path = "crates/cos-test-support", version = "0.1.0" }
 
 [features]
 # 默认 = 全插件（CLI 形态）。库嵌入可 `default-features = false` 只取框架核心，

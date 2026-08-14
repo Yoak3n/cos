@@ -6,14 +6,14 @@ license.workspace = true
 description = "LLM 提供商统一管理插件：装配（providers）+ 后备链（chains）注册进 LlmRegistry"
 
 [dependencies]
-cos-core = { path = "../../crates/cos-core" }
-cos-llm = { path = "../../crates/cos-llm" }
-cos-loader = { path = "../../crates/cos-loader" }
+cos-core = { path = "../../crates/cos-core", version = "0.1.0" }
+cos-llm = { path = "../../crates/cos-llm", version = "0.1.0" }
+cos-loader = { path = "../../crates/cos-loader", version = "0.1.0" }
 inventory.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-cos-test-support = { path = "../../crates/cos-test-support" }
+cos-test-support = { path = "../../crates/cos-test-support", version = "0.1.0" }
 futures.workspace = true
 tokio.workspace = true

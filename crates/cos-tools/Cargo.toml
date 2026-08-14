@@ -6,8 +6,8 @@ license.workspace = true
 description = "工具注册表 + 执行管线 pre/guards/execute/post（P5）"
 
 [dependencies]
-cos-core = { path = "../cos-core" }
-cos-session = { path = "../cos-session" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
+cos-session = { path = "../cos-session", version = "0.1.0" }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

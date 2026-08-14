@@ -6,5 +6,5 @@ license.workspace = true
 description = "不变量注册表（模型可见 ⟺ 已记录、seq 单调等，P6）"
 
 [dependencies]
-cos-core = { path = "../cos-core" }
-cos-session = { path = "../cos-session" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
+cos-session = { path = "../cos-session", version = "0.1.0" }

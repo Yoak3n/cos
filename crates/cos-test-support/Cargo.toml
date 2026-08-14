@@ -7,7 +7,7 @@ description = "测试支持：脚本化 mock LLM 适配器 + 本地回环 chat/c
 
 [dependencies]
 # 开启 openai feature：server.rs 测试用真实适配器（cos-llm-openai 已并入，P9）
-cos-llm = { path = "../cos-llm", features = ["openai"] }
+cos-llm = { path = "../cos-llm", version = "0.1.0", features = ["openai"] }
 futures.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "net"] }

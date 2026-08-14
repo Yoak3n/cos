@@ -6,10 +6,10 @@ license.workspace = true
 description = "RPC 协议引擎（pi 对齐）：命令分发 + 流式事件投影 + JSONL 服务循环"
 
 [dependencies]
-cos-agent = { path = "../cos-agent" }
-cos-core = { path = "../cos-core" }
-cos-llm = { path = "../cos-llm" }
-cos-session = { path = "../cos-session" }
+cos-agent = { path = "../cos-agent", version = "0.1.0" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
+cos-llm = { path = "../cos-llm", version = "0.1.0" }
+cos-session = { path = "../cos-session", version = "0.1.0" }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,5 +17,5 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-cos-agent-loop = { path = "../cos-agent-loop" }
-cos-test-support = { path = "../cos-test-support" }
+cos-agent-loop = { path = "../cos-agent-loop", version = "0.1.0" }
+cos-test-support = { path = "../cos-test-support", version = "0.1.0" }

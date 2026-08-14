@@ -1,19 +1,41 @@
 //! P8 试点端到端（P9 服务直连验证）：spawn 真实二进制 + 临时 yml
-//! （opencode Provider 插件 + `name: ./target/debug/plugin_todo_dlopen.dll`），
+//! （opencode Provider 插件 + `name: ./target/debug/plugin_todo_dlopen.{dll,so}`），
 //! `--llm-*` 指向本地回环 chat/completions 服务器（脚本：tool_use 调 todo_write → 文本）
 //! → **dlopen 工具**经 C 回调执行（内含 get_service/service_call 查询宿主 tools 桥）→
 //! 结果回流会话日志；`finish` 卸载时插件 disposer 写 marker 文件
 //! （验证效果卸载链 + 配置 JSON 传递）。
 //!
-//! 前置：`cargo build -p plugin-todo-dlopen`（或任一 dev profile 全量构建）先生成
-//! `target/debug/plugin_todo_dlopen.dll`——`cargo test` 的 test profile 产物带哈希、
-//! 不产生该未哈希文件名，测试运行时依赖它已存在（相对路径相对测试 cwd = 工作区根）。
+//! 产物定位：按平台取 `target/debug/plugin_todo_dlopen.{dll,so,dylib}`（相对测试
+//! cwd = 工作区根）；`cargo test` 的 test profile 产物带哈希、不产生未哈希文件名，
+//! 故缺失时先 spawn `cargo build -p plugin-todo-dlopen` 生成（dev profile 全量构建亦可）。
 
 use cos_test_support::{ChatReply, spawn_sync};
+use std::path::Path;
 use std::process::Command;
 
 #[test]
 fn dlopen_plugin_loads_tool_executes_and_disposes() {
+    // dlopen 插件产物：平台相关后缀；缺失则先构建（CI 冷启动场景）
+    let artifact_name = if cfg!(windows) {
+        "plugin_todo_dlopen.dll"
+    } else if cfg!(target_os = "macos") {
+        "libplugin_todo_dlopen.dylib"
+    } else {
+        "libplugin_todo_dlopen.so"
+    };
+    let artifact = Path::new("target/debug").join(artifact_name);
+    if !artifact.exists() {
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "-p", "plugin-todo-dlopen"])
+            .status()
+            .expect("spawn cargo build");
+        assert!(
+            status.success(),
+            "cargo build -p plugin-todo-dlopen 失败: {status}"
+        );
+        assert!(artifact.exists(), "构建后产物缺失: {artifact:?}");
+    }
+
     let marker = std::env::temp_dir().join(format!("cos-dlopen-marker-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&marker);
     let yml = std::env::temp_dir().join(format!("cos-dlopen-{}.yml", std::process::id()));
@@ -21,7 +43,7 @@ fn dlopen_plugin_loads_tool_executes_and_disposes() {
     std::fs::write(
         &yml,
         format!(
-            "- name: opencode-provider\n- name: ./target/debug/plugin_todo_dlopen.dll\n  config:\n    marker: {}\n",
+            "- name: opencode-provider\n- name: ./target/debug/{artifact_name}\n  config:\n    marker: {}\n",
             marker.to_string_lossy()
         ),
     )

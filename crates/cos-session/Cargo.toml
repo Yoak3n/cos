@@ -6,7 +6,7 @@ license.workspace = true
 description = "SessionEvent 追加日志、derive_messages、JSONL 持久化（P3）"
 
 [dependencies]
-cos-llm = { path = "../cos-llm" }
+cos-llm = { path = "../cos-llm", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

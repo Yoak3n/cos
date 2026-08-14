@@ -9,10 +9,10 @@ description = "B 形态版本化契约：B-ABI 版本协商、HostApi 函数表�
 serde.workspace = true
 
 [dev-dependencies]
-cos-agent = { path = "../cos-agent" }
-cos-core = { path = "../cos-core" }
-cos-llm = { path = "../cos-llm" }
-cos-session = { path = "../cos-session" }
-cos-shell = { path = "../cos-shell" }
-cos-tools = { path = "../cos-tools" }
+cos-agent = { path = "../cos-agent", version = "0.1.0" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
+cos-llm = { path = "../cos-llm", version = "0.1.0" }
+cos-session = { path = "../cos-session", version = "0.1.0" }
+cos-shell = { path = "../cos-shell", version = "0.1.0" }
+cos-tools = { path = "../cos-tools", version = "0.1.0" }
 serde_json.workspace = true

@@ -6,13 +6,13 @@ license.workspace = true
 description = "记忆插件接线：服务提供 + 四工具 + agent 读/写挂钩（M1/M2）"
 
 [dependencies]
-cos-agent = { path = "../../crates/cos-agent" }
-cos-core = { path = "../../crates/cos-core" }
-cos-llm = { path = "../../crates/cos-llm" }
-cos-loader = { path = "../../crates/cos-loader" }
-cos-memory = { path = "../../crates/cos-memory" }
-cos-session = { path = "../../crates/cos-session" }
-cos-tools = { path = "../../crates/cos-tools" }
+cos-agent = { path = "../../crates/cos-agent", version = "0.1.0" }
+cos-core = { path = "../../crates/cos-core", version = "0.1.0" }
+cos-llm = { path = "../../crates/cos-llm", version = "0.1.0" }
+cos-loader = { path = "../../crates/cos-loader", version = "0.1.0" }
+cos-memory = { path = "../../crates/cos-memory", version = "0.1.0" }
+cos-session = { path = "../../crates/cos-session", version = "0.1.0" }
+cos-tools = { path = "../../crates/cos-tools", version = "0.1.0" }
 futures.workspace = true
 inventory.workspace = true
 serde.workspace = true
@@ -20,7 +20,7 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-cos-test-support = { path = "../../crates/cos-test-support" }
-cos-agent-loop = { path = "../../crates/cos-agent-loop" }
-cos-system-prompt = { path = "../../crates/cos-system-prompt" }
+cos-test-support = { path = "../../crates/cos-test-support", version = "0.1.0" }
+cos-agent-loop = { path = "../../crates/cos-agent-loop", version = "0.1.0" }
+cos-system-prompt = { path = "../../crates/cos-system-prompt", version = "0.1.0" }
 tokio.workspace = true

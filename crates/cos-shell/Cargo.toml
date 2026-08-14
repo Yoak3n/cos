@@ -6,7 +6,7 @@ license.workspace = true
 description = "shell 接缝 + local 实现（P6，v1 前台执行）"
 
 [dependencies]
-cos-core = { path = "../cos-core" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
 futures.workspace = true
 thiserror.workspace = true
 

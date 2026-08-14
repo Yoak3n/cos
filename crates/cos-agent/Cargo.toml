@@ -6,9 +6,9 @@ license.workspace = true
 description = "Agent trait、注册表、Inbox 接缝（P4）"
 
 [dependencies]
-cos-core = { path = "../cos-core" }
-cos-llm = { path = "../cos-llm" }
-cos-session = { path = "../cos-session" }
+cos-core = { path = "../cos-core", version = "0.1.0" }
+cos-llm = { path = "../cos-llm", version = "0.1.0" }
+cos-session = { path = "../cos-session", version = "0.1.0" }
 futures.workspace = true
 inventory.workspace = true
 serde_json.workspace = true

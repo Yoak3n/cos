@@ -246,3 +246,25 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   生效，宿主二进制实际总是带上 reqwest+TLS（名义 lean）；接缝 crate 从此"默认零网络
   依赖，开 feature 背实现"。若未来出现第二个协议适配器（Anthropic/Gemini 等），
   独立 crate 模板仍是首选（`cos-llm` 的 openai 模块与其并列，或按需再拆出）。
+- **dsh 依赖驱动加载的对齐分析（决策：暂只记录，不改代码）**：dsh 的加载模型 =
+  依赖驱动（`inject` 的插件等待必需服务就绪）+ **响应式生命周期**（依赖服务消失 →
+  ACTIVE→DISPOSED，恢复后自动重载）。对照 cos：
+  - **静态一半已一致**：inject/provide 建图 + 拓扑排序 = "依赖就绪才激活"；缺依赖/
+    环/重复 provide 全部装载期 fail loud（dsh 的静态语义等价）。
+  - **差距①宿主服务不可 inject**：loader 的 provider 表只收插件 `provide()` 名单，
+    宿主装配的服务（tools/llm/shell/agents/invariants/bridges/rpc-providers/
+    system-prompt）不可见——插件声明 `inject: ['tools']` 会 MissingDependency
+    （"宿主服务边界"决策的代价）。低成本修复（暂缓）：loader 预置宿主服务名单，
+    命中即视为恒就绪（依赖显式化 + 宿主变更早失败）。
+  - **差距②无响应式生命周期**：cos 是启动时一次性装配（cordis.yml 静态清单），无
+    运行时插件热插拔 → 重载没有触发源。基础设施半现成（Fiber/EffectHandle RAII 卸载
+    支持运行时销毁），缺运行时插件管理（load/unload 入口）、服务变更事件、re-apply
+    循环——属"运行时插件管理"阶段的大功能。
+  - **关键洞察：inject 表达不了 provider 聚合副作用**——plugin-llm 需要的不是
+    "LlmRegistry 服务存在"（宿主提供、恒就绪）而是"Provider 插件已 apply（工厂已
+    注册）"；dsh 对此的兜底正是响应式重载（新 provider 出现 → llm 重新 apply）。
+    静态 loader 下该隐含顺序无法用服务图表达，**这就是 tier（插件类型优先级）存在的
+    理由**——dsh 的响应式重载可以取代 tier，但代价是整套运行时插件管理。
+  - **未来路径（记录，不承诺）**：进入运行时插件管理阶段时——先做宿主服务可
+    inject（小步）；再评估服务变更事件 + 自动重载（届时 tier 降级为纯文档性软约束，
+    硬顺序由重载语义接管）。
