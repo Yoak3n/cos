@@ -370,8 +370,15 @@ impl LlmRegistry {
             let registered = self.providers.lock().unwrap();
             for provider in &providers {
                 if !registered.contains_key(provider) {
+                    let available: Vec<&str> = registered.keys().map(String::as_str).collect();
                     return Err(CoreError::Other(format!(
-                        "后备链 '{id}' 引用了未注册提供商 '{provider}'"
+                        "后备链 '{id}' 引用了未注册提供商 '{provider}'（已注册: {}）—— \
+                         从链的 providers 里删掉它，或在 providers 里补上该条目",
+                        if available.is_empty() {
+                            "无".to_string()
+                        } else {
+                            available.join(", ")
+                        }
                     )));
                 }
             }
