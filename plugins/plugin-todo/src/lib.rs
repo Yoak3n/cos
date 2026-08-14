@@ -132,7 +132,9 @@ pub struct TodoPlugin {
 }
 
 impl Plugin for TodoPlugin {
-    const ID: &'static str = "plugin-todo";
+    fn id(&self) -> &'static str {
+        "plugin-todo"
+    }
 
     type Config = TodoConfig;
 

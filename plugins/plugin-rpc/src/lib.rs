@@ -46,7 +46,9 @@ impl RpcProvider for DefaultProvider {
 pub struct RpcPlugin;
 
 impl Plugin for RpcPlugin {
-    const ID: &'static str = "plugin-rpc";
+    fn id(&self) -> &'static str {
+        "plugin-rpc"
+    }
 
     type Config = RpcConfig;
 

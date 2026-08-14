@@ -54,9 +54,9 @@ pub fn available_plugins() -> Vec<&'static str> {
 pub mod private {
     use super::*;
 
-    /// `P::ID`。
+    /// `P::default().id()`。
     pub fn id_of<P: Plugin + Default>() -> &'static str {
-        P::ID
+        P::default().id()
     }
 
     /// `P::default().inject()`。
@@ -78,21 +78,21 @@ pub mod private {
         let config: P::Config =
             serde_json::from_value(config).map_err(|source| LoadError::ConfigParse {
                 id: entry_id.to_string(),
-                name: P::ID.to_string(),
+                name: P::default().id().to_string(),
                 source,
             })?;
         config
             .validate()
             .map_err(|source| LoadError::ConfigInvalid {
                 id: entry_id.to_string(),
-                name: P::ID.to_string(),
+                name: P::default().id().to_string(),
                 source,
             })?;
         P::default()
             .apply(ctx, &config)
             .map_err(|source| LoadError::Apply {
                 id: entry_id.to_string(),
-                name: P::ID.to_string(),
+                name: P::default().id().to_string(),
                 source,
             })
     }

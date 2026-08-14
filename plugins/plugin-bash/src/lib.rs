@@ -102,7 +102,9 @@ fn format_output(output: ShellOutput) -> ToolOutcome {
 pub struct BashPlugin;
 
 impl Plugin for BashPlugin {
-    const ID: &'static str = "plugin-bash";
+    fn id(&self) -> &'static str {
+        "plugin-bash"
+    }
 
     type Config = BashConfig;
 

@@ -15,9 +15,11 @@ use std::sync::{Arc, Mutex};
 use cos_core::{Context, CoreError, CoreResult, Service};
 use cos_session::ToolError;
 use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 
 /// 一次工具调用（参数已解析；空串 → `{}`，非法 JSON → 原串文本，同 dsh `parseArguments`）。
-#[derive(Debug, Clone)]
+/// P7 冻结：serde 可序列化（B-ABI 跨边界载荷 = JSON）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolRun {
     /// 调用 id（与 `tool/result` 配对）。
     pub call_id: String,
@@ -32,7 +34,8 @@ pub struct ToolRun {
 }
 
 /// 一次工具调用的结果（模型可见内容 + 内部失败身份）。
-#[derive(Debug, Clone, PartialEq)]
+/// P7 冻结：serde 可序列化（B-ABI 跨边界载荷 = JSON）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolOutcome {
     /// 模型可见结果文本。
     pub content: String,

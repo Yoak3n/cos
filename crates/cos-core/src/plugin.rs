@@ -17,9 +17,12 @@ pub trait Validate {
 }
 
 /// 插件：`inject` / `provide` 声明服务依赖与产出，`apply` 执行注册。
+///
+/// 对象安全（P7 冻结）：元数据一律关联函数（`id`/`inject`/`provide` 无 self），
+/// 不含关联常量——trait 可作 `dyn` 使用（B 形态 FFI 转发前提）。
 pub trait Plugin: Send + Sync {
-    /// 插件 id（同 cordis plugin id）。
-    const ID: &'static str;
+    /// 插件 id（同 cordis plugin id；实例方法——关联常量会破坏 dyn-compatible，P7 冻结）。
+    fn id(&self) -> &'static str;
 
     /// 配置类型：serde 反序列化 + 校验。
     type Config: DeserializeOwned + Validate;
@@ -32,7 +35,7 @@ pub trait Plugin: Send + Sync {
         &[]
     }
 
-    /// 提供的服务名（无则空）；同 [`Service::NAME`] 一致。
+    /// 提供的服务名（无则空）；同 [`Service::name`] 一致。
     fn provide(&self) -> &'static [&'static str] {
         &[]
     }

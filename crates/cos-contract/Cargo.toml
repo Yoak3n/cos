@@ -3,7 +3,16 @@ name = "cos-contract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "版本化契约 crate，B 形态地基（版本号 P0 即存在）"
+description = "B 形态版本化契约：B-ABI 版本协商、HostApi 函数表、错误码、插件清单（地基 crate，零运行时依赖）"
 
 [dependencies]
+serde.workspace = true
 
+[dev-dependencies]
+cos-agent = { path = "../cos-agent" }
+cos-core = { path = "../cos-core" }
+cos-llm = { path = "../cos-llm" }
+cos-session = { path = "../cos-session" }
+cos-shell = { path = "../cos-shell" }
+cos-tools = { path = "../cos-tools" }
+serde_json.workspace = true

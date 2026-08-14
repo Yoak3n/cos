@@ -125,6 +125,16 @@ dependencies = [
 [[package]]
 name = "cos-contract"
 version = "0.1.0"
+dependencies = [
+ "cos-agent",
+ "cos-core",
+ "cos-llm",
+ "cos-session",
+ "cos-shell",
+ "cos-tools",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "cos-core"
@@ -263,6 +273,7 @@ dependencies = [
  "cos-core",
  "cos-session",
  "futures",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

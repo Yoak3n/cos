@@ -79,7 +79,9 @@ impl Validate for DemoConfig {
 #[derive(Default)]
 struct LlmPlugin;
 impl Plugin for LlmPlugin {
-    const ID: &'static str = "plugin-llm";
+    fn id(&self) -> &'static str {
+        "plugin-llm"
+    }
     type Config = LlmConfig;
     fn provide(&self) -> &'static [&'static str] {
         &["llm"]
@@ -97,7 +99,9 @@ loader::plugin!("llm", LlmPlugin);
 #[derive(Default)]
 struct AgentLoopPlugin;
 impl Plugin for AgentLoopPlugin {
-    const ID: &'static str = "plugin-agent-loop";
+    fn id(&self) -> &'static str {
+        "plugin-agent-loop"
+    }
     type Config = NoConfig;
     fn inject(&self) -> &'static [&'static str] {
         &["llm"]
@@ -119,7 +123,9 @@ loader::plugin!("agent-loop", AgentLoopPlugin);
 #[derive(Default)]
 struct TodoPlugin;
 impl Plugin for TodoPlugin {
-    const ID: &'static str = "plugin-todo";
+    fn id(&self) -> &'static str {
+        "plugin-todo"
+    }
     type Config = NoConfig;
     fn inject(&self) -> &'static [&'static str] {
         &["llm"]
@@ -135,7 +141,9 @@ loader::plugin!("todo", TodoPlugin);
 #[derive(Default)]
 struct DemoPlugin;
 impl Plugin for DemoPlugin {
-    const ID: &'static str = "plugin-demo";
+    fn id(&self) -> &'static str {
+        "plugin-demo"
+    }
     type Config = DemoConfig;
     fn apply(&self, ctx: &Context, _config: &Self::Config) -> Result<(), CoreError> {
         ctx.fiber().push(EffectHandle::new(|| push_unload("demo")));
@@ -147,7 +155,9 @@ loader::plugin!("demo", DemoPlugin);
 #[derive(Default)]
 struct FailingPlugin;
 impl Plugin for FailingPlugin {
-    const ID: &'static str = "plugin-failing";
+    fn id(&self) -> &'static str {
+        "plugin-failing"
+    }
     type Config = NoConfig;
     fn apply(&self, _ctx: &Context, _config: &Self::Config) -> Result<(), CoreError> {
         Err(CoreError::Other("boom".into()))
@@ -158,7 +168,9 @@ loader::plugin!("failing", FailingPlugin);
 #[derive(Default)]
 struct CyclicA;
 impl Plugin for CyclicA {
-    const ID: &'static str = "plugin-cycler-a";
+    fn id(&self) -> &'static str {
+        "plugin-cycler-a"
+    }
     type Config = NoConfig;
     fn inject(&self) -> &'static [&'static str] {
         &["svc-b"]
@@ -175,7 +187,9 @@ loader::plugin!("cycler-a", CyclicA);
 #[derive(Default)]
 struct CyclicB;
 impl Plugin for CyclicB {
-    const ID: &'static str = "plugin-cycler-b";
+    fn id(&self) -> &'static str {
+        "plugin-cycler-b"
+    }
     type Config = NoConfig;
     fn inject(&self) -> &'static [&'static str] {
         &["svc-a"]

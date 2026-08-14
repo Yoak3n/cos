@@ -9,6 +9,7 @@ description = "工具注册表 + 执行管线 pre/guards/execute/post（P5）"
 cos-core = { path = "../cos-core" }
 cos-session = { path = "../cos-session" }
 futures.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

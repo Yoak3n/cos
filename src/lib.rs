@@ -134,15 +134,20 @@ fn demo_script() -> Vec<MockReply> {
     ]
 }
 
+/// 插件 id 辅助（generic 路径：既避免 unit-struct 构造 lint，也兼容带字段的插件）。
+fn plugin_id<P: Plugin + Default>() -> &'static str {
+    P::default().id()
+}
+
 /// 内置插件的插件 id —— 同时是对插件 crate 的显式引用锚点：
 /// 保证其 inventory 静态注册表被链接进 cos 可执行文件。
 pub fn builtin_plugin_ids() -> [&'static str; 5] {
     [
-        plugin_todo::TodoPlugin::ID,
-        plugin_bash::BashPlugin::ID,
-        plugin_memory::MemoryPlugin::ID,
-        plugin_llm::LlmPlugin::ID,
-        plugin_rpc::RpcPlugin::ID,
+        plugin_id::<plugin_todo::TodoPlugin>(),
+        plugin_id::<plugin_bash::BashPlugin>(),
+        plugin_id::<plugin_memory::MemoryPlugin>(),
+        plugin_id::<plugin_llm::LlmPlugin>(),
+        plugin_id::<plugin_rpc::RpcPlugin>(),
     ]
 }
 

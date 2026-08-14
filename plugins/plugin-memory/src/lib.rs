@@ -638,7 +638,9 @@ async fn build_memory_section(store: &MemoryStore, query: Option<&str>) -> Optio
 pub struct MemoryPlugin;
 
 impl Plugin for MemoryPlugin {
-    const ID: &'static str = "plugin-memory";
+    fn id(&self) -> &'static str {
+        "plugin-memory"
+    }
 
     type Config = MemoryConfig;
 

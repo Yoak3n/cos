@@ -24,7 +24,9 @@ impl Validate for HelloConfig {}
 struct HelloPlugin;
 
 impl Plugin for HelloPlugin {
-    const ID: &'static str = "plugin-hello";
+    fn id(&self) -> &'static str {
+        "plugin-hello"
+    }
 
     type Config = HelloConfig;
 

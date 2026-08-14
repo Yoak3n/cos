@@ -68,7 +68,9 @@ impl Validate for LlmConfig {}
 pub struct LlmPlugin;
 
 impl Plugin for LlmPlugin {
-    const ID: &'static str = "plugin-llm";
+    fn id(&self) -> &'static str {
+        "plugin-llm"
+    }
 
     type Config = LlmConfig;
 
