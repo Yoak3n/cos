@@ -3,9 +3,11 @@
 //! - 注册表：id → 活 agent；重复注册报错；`agent/created` / `agent/disposed`
 //!   经 scope 路由（`ScopeTarget::Key(agent:<id>)`）分发；
 //! - 因果链：`with_initiator` 用 tokio task-local 把发起 agent 传给下游异步链
-//!   （同进程因果归因，非授权/存活证明）。
+//!   （同进程因果归因，非授权/存活证明）；
+//! - **驱动可替换**：agent 驱动器 = `agent_factory!` 注册的工厂（inventory 静态收集，
+//!   同 `llm_factory!` 构型）；宿主按 id 选择驱动（缺省 `loop`），未注册 → fail loud。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +18,32 @@ use crate::types::{
     AgentCreatedPayload, AgentDisposedPayload, AgentError, AgentFactory, AgentTrait,
     CreateAgentOptions,
 };
+
+/// 驱动工厂构建函数（id + 配置 → 已实例化工厂）。
+pub type AgentFactoryFn = fn(&serde_json::Value) -> Result<Arc<dyn AgentFactory>, AgentError>;
+
+/// 驱动工厂条目（inventory 静态收集，同 loader 的 `PluginRegistrar` 模式）。
+///
+/// `build` 是自由函数指针（const 可构造）：各驱动器 crate（cos-agent-loop …）经
+/// [`agent_factory!`] 注册；宿主按 id 解析并构建。
+pub struct AgentFactoryEntry {
+    /// 驱动 id（`--agent-driver <id>` / 配置选择键）。
+    pub id: &'static str,
+    /// 由配置构建工厂。
+    pub build: AgentFactoryFn,
+}
+
+inventory::collect!(AgentFactoryEntry);
+
+/// 注册一个 agent 驱动工厂：`agent_factory!("loop", build_loop)`。
+#[macro_export]
+macro_rules! agent_factory {
+    ($id:literal, $build:path) => {
+        ::inventory::submit! {
+            $crate::AgentFactoryEntry { id: $id, build: $build }
+        }
+    };
+}
 
 tokio::task_local! {
     static CURRENT_INITIATOR: Option<Arc<dyn AgentTrait>>;
@@ -49,6 +77,8 @@ pub fn current_initiator() -> Option<Arc<dyn AgentTrait>> {
 struct RegistryInner {
     store: HashMap<String, Arc<dyn AgentTrait>>,
     factory: Option<Arc<dyn AgentFactory>>,
+    /// 驱动工厂表（inventory 静态收集 + 程序化补充）。
+    factories: BTreeMap<&'static str, AgentFactoryFn>,
 }
 
 /// agent 注册表服务（`ctx.provide` 为 `"agents"`）。
@@ -63,13 +93,18 @@ impl Service for AgentRegistry {
 }
 
 impl AgentRegistry {
-    /// 在根上下文上新建注册表。
+    /// 在根上下文上新建注册表（驱动工厂表由 inventory 收集填充）。
     pub fn new(root: &Context) -> Self {
+        let mut factories = BTreeMap::new();
+        for entry in inventory::iter::<AgentFactoryEntry> {
+            factories.insert(entry.id, entry.build);
+        }
         Self {
             ctx: root.clone(),
             inner: Arc::new(Mutex::new(RegistryInner {
                 store: HashMap::new(),
                 factory: None,
+                factories,
             })),
         }
     }
@@ -83,6 +118,59 @@ impl AgentRegistry {
             ));
         }
         inner.factory = Some(factory);
+        Ok(())
+    }
+
+    /// 程序化注册驱动工厂（inventory 之外的补充；同名拒绝）。
+    pub fn register_factory(
+        &self,
+        id: &'static str,
+        build: AgentFactoryFn,
+    ) -> Result<(), AgentError> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.factories.contains_key(id) {
+            return Err(AgentError::Other(format!(
+                "agent driver '{id}' is already registered"
+            )));
+        }
+        inner.factories.insert(id, build);
+        Ok(())
+    }
+
+    /// 全部已注册驱动 id（排序稳定，供报警/诊断）。
+    pub fn driver_ids(&self) -> Vec<&'static str> {
+        self.inner
+            .lock()
+            .unwrap()
+            .factories
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    /// 按 id 选择并激活驱动（`--agent-driver <id>` / 配置选择键）：
+    /// 由工厂构建 `AgentFactory` 作为活动工厂；未知 id → [`AgentError::UnknownDriver`]（fail loud）。
+    pub fn set_driver(&self, id: &str, config: &serde_json::Value) -> Result<(), AgentError> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.factory.is_some() {
+            return Err(AgentError::Other(
+                "an agent factory is already registered".into(),
+            ));
+        }
+        let build = inner
+            .factories
+            .get(id)
+            .copied()
+            .ok_or_else(|| AgentError::UnknownDriver {
+                id: id.to_string(),
+                available: inner
+                    .factories
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            })?;
+        inner.factory = Some(build(config)?);
         Ok(())
     }
 

@@ -7,6 +7,10 @@
 //!
 //! LLM 统一管理：Provider crate 经 [`llm_factory!`] 注册工厂（inventory 静态收集），
 //! [`LlmRegistry`] 服务统一装配/按名取用/后备链（[`FallbackAdapter`] 未产出即失败自动切换）。
+//!
+//! **`openai` feature**（默认关）：OpenAI 兼容 `chat/completions` 适配器
+//! （[`build_openai`] / [`OpenAiAdapter`]，原 cos-llm-openai crate，P9 并入）——随
+//! feature 引入 reqwest/tokio，只有 Provider 封装插件开启；默认特性零网络依赖。
 
 #![warn(missing_docs)]
 
@@ -14,9 +18,15 @@ use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use cos_core::{Context, CoreError, CoreResult, Service};
+use cos_core::{Context, CoreError, CoreResult, JsonBridge, Service};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "openai")]
+pub mod openai;
+
+#[cfg(feature = "openai")]
+pub use openai::{OpenAiAdapter, OpenAiConfig, build_openai};
 
 /// 消息角色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,7 +279,8 @@ pub trait LlmAdapter: Send + Sync {
 /// 提供商工厂条目（inventory 静态收集，同 loader 的 `PluginRegistrar` 模式）。
 ///
 /// `build` 是自由函数指针（const 可构造）：`kind` + 配置 → 已实例化适配器。
-/// 各 Provider crate（cos-llm-opencode / cos-llm-mock …）经 [`llm_factory!`] 注册。
+/// 各 Provider crate 经 [`llm_factory!`] 注册（inventory 路径；插件化路径见
+/// [`LlmRegistry::register_factory_with_defaults`]）。
 pub struct FactoryEntry {
     /// 提供商 kind（配置里引用的名字）。
     pub kind: &'static str,
@@ -279,7 +290,7 @@ pub struct FactoryEntry {
 
 inventory::collect!(FactoryEntry);
 
-/// 注册一个 LLM 提供商工厂：`llm_factory!("opencode", build_opencode)`。
+/// 注册一个 LLM 提供商工厂：`llm_factory!("opencode", build_openai)`。
 #[macro_export]
 macro_rules! llm_factory {
     ($kind:literal, $build:path) => {
@@ -292,15 +303,125 @@ macro_rules! llm_factory {
 /// 提供商工厂构建函数（配置 → 适配器）。
 pub type LlmFactoryFn = fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>;
 
+/// 工厂槽位：构建函数 + 默认配置 + 模型目录（`build` 时三级浅合并）。
+struct FactorySlot {
+    build: LlmFactoryFn,
+    /// 插件级默认配置（非对象视为无默认）；`${ENV_VAR}` 展开由注册方负责。
+    defaults: serde_json::Value,
+    /// 模型级默认（按 `model` 索引；合并序：插件级 < 模型级 < 条目 config）。
+    catalog: std::collections::BTreeMap<String, CatalogEntry>,
+}
+
+/// 一条目录条目：分组标签 + 模型级默认字段。
+#[derive(Clone)]
+struct CatalogEntry {
+    /// 分组标签（如 go/zen；None = 不分组）。
+    group: Option<String>,
+    /// 模型级默认字段。
+    defaults: serde_json::Value,
+}
+
+/// 一条模型目录条目：某模型的内置默认字段（端点、api 风格、预算等）。
+///
+/// Provider 插件（如 plugin-opencode 的 go/zen 套餐目录）把"每个模型自己的默认值"
+/// 随工厂注册——`build(kind, config)` 时按 `config.model` 查到该条目并作为**模型级
+/// 默认**参与合并（条目 config 仍可覆盖）。`defaults` 为自由 JSON，常见字段：
+/// `base_url` / `api_style` / `streaming` / `max_tokens` / `input_content`。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ModelDefaults {
+    /// 模型 id（`config.model` 的匹配键）。
+    pub model: String,
+    /// 分组标签（如 go/zen 套餐；`group:` 选择与按组查询用；缺省不分组）。
+    #[serde(default)]
+    pub group: Option<String>,
+    /// 该模型的默认字段（浅合并；条目 config 覆盖）。
+    #[serde(default)]
+    pub defaults: serde_json::Value,
+}
+
+/// 把 `config` 浅合并到 `defaults` 之上：defaults 为底，config 的字段覆盖。
+fn merge_defaults(defaults: &serde_json::Value, config: &serde_json::Value) -> serde_json::Value {
+    let Some(defaults) = defaults.as_object() else {
+        return config.clone();
+    };
+    let Some(config) = config.as_object() else {
+        return serde_json::Value::Object(defaults.clone());
+    };
+    let mut merged = defaults.clone();
+    for (key, value) in config {
+        merged.insert(key.clone(), value.clone());
+    }
+    serde_json::Value::Object(merged)
+}
+
+/// 把配置值里的 `${ENV_VAR}` 展开为环境变量（缺失 → `Err`；字符串递归）。
+///
+/// Provider 插件注册 `defaults` 时若含环境变量引用，apply 内先经本函数展开。
+pub fn expand_env(config: &mut serde_json::Value) -> Result<(), String> {
+    match config {
+        serde_json::Value::String(value) => {
+            if let Some(rest) = value
+                .strip_prefix("${")
+                .and_then(|rest| rest.strip_suffix('}'))
+            {
+                let resolved = std::env::var(rest)
+                    .map_err(|_| format!("环境变量 {rest} 未设置（引用处: {value}）"))?;
+                *value = resolved;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                expand_env(item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                expand_env(item)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Provider 插件条目（inventory 静态收集）：**yml 插件名 → 注册的 kind** 的映射。
+///
+/// Provider 封装插件（plugin-opencode / plugin-custom-provider）经 [`provider_plugin!`]
+/// 声明"我的 yml 工厂名对应哪个 kind"——plugin-llm 的 provider 条目即可用
+/// `plugin: <插件名>` 引用（无需再写 `kind`），并经目录校验模型可用性。
+pub struct ProviderPluginEntry {
+    /// yml 插件名（`- name: opencode-provider` 的 name，与 `plugin!` 注册名一致）。
+    pub plugin_name: &'static str,
+    /// 该插件注册的 Provider kind。
+    pub kind: &'static str,
+}
+
+inventory::collect!(ProviderPluginEntry);
+
+/// 声明 Provider 插件名 → kind 映射：`provider_plugin!("opencode-provider", OPENCODE_KIND)`。
+#[macro_export]
+macro_rules! provider_plugin {
+    ($plugin:literal, $kind:path) => {
+        ::inventory::submit! {
+            $crate::ProviderPluginEntry { plugin_name: $plugin, kind: $kind }
+        }
+    };
+}
+
 /// LLM 提供商注册表服务（`ctx.provide` 为 `"llm"`）：统一装配、按名取用、后备链。
 ///
 /// 与 `ToolRegistry`/`AgentRegistry` 同构：宿主装配空注册表，`plugin-llm` 按配置填充，
 /// 消费者（记忆插件、agent 创建）按 id / 链 id 解析。工厂来自 inventory 静态收集
-/// （MSVC 下需确保 Provider crate 被链接，cos 锚点天然满足）。
+/// （MSVC 下需确保 Provider crate 被链接，cos 锚点天然满足）与插件化注册
+/// （[`register_factory`] / [`register_factory_with_defaults`]，Provider 封装插件）。
 pub struct LlmRegistry {
-    factories: Mutex<BTreeMap<&'static str, LlmFactoryFn>>,
+    factories: Mutex<BTreeMap<&'static str, FactorySlot>>,
     providers: Mutex<BTreeMap<String, Arc<dyn LlmAdapter>>>,
     chains: Mutex<BTreeMap<String, Vec<String>>>,
+    /// 插件名 → kind（`provider_plugin!` 静态收集；plugin-llm 的 `plugin:` 引用用）。
+    plugins: Mutex<BTreeMap<&'static str, &'static str>>,
 }
 
 impl Service for LlmRegistry {
@@ -308,16 +429,28 @@ impl Service for LlmRegistry {
 }
 
 impl LlmRegistry {
-    /// 空注册表（工厂表由 inventory 收集填充）。
+    /// 空注册表（工厂表与插件映射由 inventory 收集填充）。
     pub fn new(_root: &Context) -> Self {
         let mut factories = BTreeMap::new();
         for entry in inventory::iter::<FactoryEntry> {
-            factories.insert(entry.kind, entry.build);
+            factories.insert(
+                entry.kind,
+                FactorySlot {
+                    build: entry.build,
+                    defaults: serde_json::Value::Null,
+                    catalog: BTreeMap::new(),
+                },
+            );
+        }
+        let mut plugins = BTreeMap::new();
+        for entry in inventory::iter::<ProviderPluginEntry> {
+            plugins.insert(entry.plugin_name, entry.kind);
         }
         Self {
             factories: Mutex::new(factories),
             providers: Mutex::new(BTreeMap::new()),
             chains: Mutex::new(BTreeMap::new()),
+            plugins: Mutex::new(plugins),
         }
     }
 
@@ -327,11 +460,60 @@ impl LlmRegistry {
         kind: &'static str,
         build: fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>,
     ) -> CoreResult<()> {
+        self.register_factory_with_defaults(kind, build, serde_json::Value::Null)
+    }
+
+    /// 程序化注册工厂 + **默认配置**（同名拒绝）。
+    ///
+    /// `build(kind, config)` 时把 `config` 浅合并到 `defaults` 之上——Provider 封装插件
+    /// （如 plugin-opencode 的套餐端点）把公共字段下沉为默认值，provider 条目只需填差异
+    /// 字段（model/api_key 等）。`defaults` 中的 `${ENV_VAR}` 需注册方在 apply 内展开。
+    pub fn register_factory_with_defaults(
+        &self,
+        kind: &'static str,
+        build: fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>,
+        defaults: serde_json::Value,
+    ) -> CoreResult<()> {
+        self.register_factory_with_catalog(kind, build, defaults, Vec::new())
+    }
+
+    /// 程序化注册工厂 + 默认配置 + **模型目录**（同名拒绝）。
+    ///
+    /// 三级合并（默认被覆盖的次序）：插件级 `defaults` < 模型级 `catalog[config.model]`
+    /// < 条目 `config`。模型目录让 Provider 插件内置"每个模型自己的默认值"——go/zen
+    /// 等套餐的模型清单、各自的端点/api 风格/预算——provider 条目通常只写 `model` +
+    /// `api_key`。同名模型条目后者覆盖（目录可扩展）。
+    pub fn register_factory_with_catalog(
+        &self,
+        kind: &'static str,
+        build: fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>,
+        defaults: serde_json::Value,
+        catalog: Vec<ModelDefaults>,
+    ) -> CoreResult<()> {
         let mut factories = self.factories.lock().unwrap();
         if factories.contains_key(kind) {
             return Err(CoreError::Other(format!("LLM 工厂 '{kind}' 已注册")));
         }
-        factories.insert(kind, build);
+        let catalog = catalog
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.model,
+                    CatalogEntry {
+                        group: entry.group,
+                        defaults: entry.defaults,
+                    },
+                )
+            })
+            .collect();
+        factories.insert(
+            kind,
+            FactorySlot {
+                build,
+                defaults,
+                catalog,
+            },
+        );
         Ok(())
     }
 
@@ -340,20 +522,91 @@ impl LlmRegistry {
         self.factories.lock().unwrap().keys().copied().collect()
     }
 
-    /// 按 kind + 配置构建适配器（工厂查找 + 调用）。
+    /// 按插件名查 kind（`provider_plugin!` 静态映射；plugin-llm 的 `plugin:` 引用用）。
+    pub fn kind_of_plugin(&self, plugin_name: &str) -> Option<&'static str> {
+        self.plugins.lock().unwrap().get(plugin_name).copied()
+    }
+
+    /// 全部已声明 Provider 插件名（排序稳定；错误提示用）。
+    pub fn plugin_names(&self) -> Vec<&'static str> {
+        self.plugins.lock().unwrap().keys().copied().collect()
+    }
+
+    /// **可用模型查询**（`get_available_models` 的运行时形态）：某 kind 的模型目录中的
+    /// 模型 id 列表（排序稳定）。Provider 插件在代码里维护目录（如 plugin-opencode 的
+    /// `BUILTIN_MODELS`），配置面经 `config.models` 追加/覆盖——本接口是"代码维护 +
+    /// 公开查询"的入口；plugin-llm 据此做目录校验与"省略模型 = 全量展开"。
+    pub fn available_models(&self, kind: &str) -> Vec<String> {
+        self.factories
+            .lock()
+            .unwrap()
+            .get(kind)
+            .map(|slot| slot.catalog.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// 某 kind 目录中的**分组标签**列表（排序去重；`group:` 选择与错误提示用）。
+    pub fn available_groups(&self, kind: &str) -> Vec<String> {
+        let mut groups: Vec<String> = self
+            .factories
+            .lock()
+            .unwrap()
+            .get(kind)
+            .map(|slot| {
+                slot.catalog
+                    .values()
+                    .filter_map(|entry| entry.group.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        groups.sort();
+        groups.dedup();
+        groups
+    }
+
+    /// 某 kind 目录中**指定分组**的模型 id 列表（排序稳定；省略模型 + `group:` 时展开用）。
+    pub fn models_in_group(&self, kind: &str, group: &str) -> Vec<String> {
+        let mut models: Vec<String> = self
+            .factories
+            .lock()
+            .unwrap()
+            .get(kind)
+            .map(|slot| {
+                slot.catalog
+                    .iter()
+                    .filter(|(_, entry)| entry.group.as_deref() == Some(group))
+                    .map(|(model, _)| model.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        models.sort();
+        models
+    }
+
+    /// 按 kind + 配置构建适配器（工厂查找 + 三级默认合并 + 调用）。
     pub fn build(
         &self,
         kind: &str,
         config: &serde_json::Value,
     ) -> Result<Arc<dyn LlmAdapter>, LlmError> {
-        let build = self
+        let slot = self
             .factories
             .lock()
             .unwrap()
             .get(kind)
-            .copied()
+            .map(|slot| (slot.build, slot.defaults.clone(), slot.catalog.clone()))
             .ok_or_else(|| LlmError::Failure(format!("未知 LLM 提供商 kind: {kind}")))?;
-        build(config)
+        // 三级合并：插件级 < 模型级（按 config.model 查目录）< 条目 config
+        let mut merged = slot.1;
+        if let Some(model_entry) = config
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|model| slot.2.get(model))
+        {
+            merged = merge_defaults(&merged, &model_entry.defaults);
+        }
+        let merged = merge_defaults(&merged, config);
+        (slot.0)(&merged)
     }
 
     /// 注册已实例化适配器；同 id 拒绝（fail loud）。
@@ -626,5 +879,31 @@ impl LlmAdapter for FallbackAdapter {
                 }
             },
         ))
+    }
+}
+
+/// JSON 桥（P9）：B 形态插件经 `get_service("llm")` + `service_call` 调用。
+///
+/// 方法集：
+/// - `kinds`（无参数）→ 已注册提供商工厂 kind 列表（排序稳定）；
+/// - `supports` `{id, content?}` → 指定提供商能否接收该输入内容类型（缺省 `text`）。
+impl JsonBridge for LlmRegistry {
+    fn call(&self, method: &str, args: serde_json::Value) -> CoreResult<serde_json::Value> {
+        match method {
+            "kinds" => Ok(serde_json::json!(self.factory_kinds())),
+            "supports" => {
+                let id = args
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| CoreError::Other("llm.supports 需要 id".into()))?;
+                let content: InputContent = args
+                    .get("content")
+                    .cloned()
+                    .map(|value| serde_json::from_value(value).unwrap_or(InputContent::Text))
+                    .unwrap_or(InputContent::Text);
+                Ok(serde_json::json!(self.supports(id, content)))
+            }
+            other => Err(CoreError::Other(format!("未知 llm 桥方法: {other}"))),
+        }
     }
 }

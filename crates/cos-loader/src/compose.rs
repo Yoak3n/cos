@@ -10,7 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use cos_core::Context;
+use cos_core::{Context, PluginTier};
 
 use crate::dlopen::DlopenPlugin;
 use crate::error::LoadError;
@@ -27,6 +27,14 @@ pub(crate) enum FactoryRef {
 }
 
 impl FactoryRef {
+    /// 插件类型（装配优先级层级；dlopen = Other）。
+    fn tier(&self) -> PluginTier {
+        match self {
+            FactoryRef::Static(factory) => (factory.tier)(),
+            FactoryRef::Dlopen(_) => PluginTier::Other,
+        }
+    }
+
     /// 依赖的服务名（静态 = 宏声明；dlopen = 清单，P8 为空 → 无注入声明）。
     fn inject(&self) -> &'static [&'static str] {
         match self {
@@ -116,6 +124,8 @@ pub struct PlannedEntry {
     pub entry_id: String,
     /// 工厂名。
     pub name: String,
+    /// 插件类型（装配优先级层级）。
+    pub tier: PluginTier,
     /// 有效配置。
     pub config: serde_json::Value,
     pub(crate) factory: FactoryRef,
@@ -127,6 +137,7 @@ impl PlannedEntry {
         serde_json::json!({
             "id": self.entry_id,
             "name": self.name,
+            "tier": format!("{:?}", self.tier),
             "config": self.config,
         })
     }
@@ -202,7 +213,11 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
         deps.push(node_deps);
     }
 
-    // 3. Kahn 拓扑排序（提供者先于消费者）。
+    // 3. Kahn 拓扑排序（提供者先于消费者）；就绪集按**插件类型优先级**出队：
+    //    Provider < Core < Other（同类型保持配置顺序，稳定）——"注册前扫描一遍，
+    //    按类型分配基准顺序"：无依赖边的插件不再按配置顺序排先后，而按类型层级；
+    //    `inject` 边仍是硬约束（优先级只作用于无依赖边的节点间）。
+    let tiers: Vec<PluginTier> = resolved.iter().map(|(_, factory)| factory.tier()).collect();
     let mut indegree = vec![0usize; node_count];
     let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); node_count];
     for (consumer_index, node_deps) in deps.iter().enumerate() {
@@ -215,7 +230,12 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
         .filter(|&index| indegree[index] == 0)
         .collect();
     let mut order = Vec::with_capacity(node_count);
-    while let Some(index) = ready.pop_front() {
+    while let Some(index) = ready
+        .iter()
+        .copied()
+        .min_by_key(|&index| (tiers[index], index))
+    {
+        ready.retain(|&item| item != index);
         order.push(index);
         for &consumer_index in &consumers[index] {
             indegree[consumer_index] -= 1;
@@ -239,6 +259,7 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
             PlannedEntry {
                 entry_id: entry.id().to_string(),
                 name: entry.name.clone(),
+                tier: factory.tier(),
                 config: entry.config.clone(),
                 factory: factory.clone(),
             }

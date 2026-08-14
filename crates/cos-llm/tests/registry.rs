@@ -5,9 +5,9 @@ use std::sync::Arc;
 use cos_core::Context;
 use cos_llm::{
     ChunkDelta, FallbackAdapter, InputContent, LlmAdapter, LlmError, LlmRegistry, LlmRequest,
-    LlmStream, StreamChunk, UserMessage,
+    LlmStream, ModelDefaults, StreamChunk, UserMessage,
 };
-use cos_llm_mock::{MockAdapter, MockReply};
+use cos_test_support::{MockAdapter, MockReply};
 use futures::StreamExt;
 use serde_json::json;
 
@@ -117,11 +117,16 @@ impl LlmAdapter for EmptyAdapter {
 async fn registry_register_get_list_and_errors() {
     let ctx = Context::root();
     let registry = LlmRegistry::new(&ctx);
+    // Provider 工厂现为声明式（plugin-opencode 等插件 apply 时注册）；测试二进制无插件 → 空表
     assert!(
-        registry.factory_kinds().contains(&"mock"),
-        "inventory 应收集到 cos-llm-mock 工厂: {:?}",
+        registry.factory_kinds().is_empty(),
+        "测试二进制不应收集到运行时 Provider 工厂: {:?}",
         registry.factory_kinds()
     );
+    // 程序化注册工厂（register_factory 是 LlmRegistry 的扩展点）
+    registry
+        .register_factory("echo", |_| Ok(Arc::new(MockAdapter::new("echo", vec![]))))
+        .unwrap();
 
     registry
         .register("a", Arc::new(MockAdapter::new("mock-a", vec![])))
@@ -141,7 +146,7 @@ async fn registry_register_get_list_and_errors() {
     // 未知 kind
     assert!(registry.build("nope", &json!({})).is_err());
     // 已知 kind + 配置
-    assert!(registry.build("mock", &json!({})).is_ok());
+    assert!(registry.build("echo", &json!({})).is_ok());
 }
 
 #[tokio::test]
@@ -180,22 +185,18 @@ async fn registry_chains_resolve_and_fallback() {
 }
 
 #[tokio::test]
-async fn registry_build_uses_inventory_factory() {
+async fn registry_build_uses_registered_factory() {
     let ctx = Context::root();
     let registry = LlmRegistry::new(&ctx);
-    let adapter = registry.build("mock", &json!({})).unwrap();
-    assert_eq!(adapter.id(), "mock");
-    // 程序化注册工厂补充
+    // 程序化注册工厂（inventory 之外的补充路径；插件 apply 走同一条）
     registry
-        .register_factory("custom", |_| {
-            Ok(Arc::new(MockAdapter::new("custom", vec![])))
-        })
+        .register_factory("p1", |_| Ok(Arc::new(MockAdapter::new("p1", vec![]))))
         .unwrap();
-    assert!(registry.build("custom", &json!({})).is_ok());
+    let adapter = registry.build("p1", &json!({})).unwrap();
+    assert_eq!(adapter.id(), "p1");
+    // 同名拒绝（fail loud）
     assert!(
-        registry
-            .register_factory("mock", |_| unreachable!())
-            .is_err(),
+        registry.register_factory("p1", |_| unreachable!()).is_err(),
         "同名工厂拒绝"
     );
 }
@@ -261,4 +262,149 @@ async fn registry_capabilities_supports_and_by_capability() {
     // 未知 id
     assert!(registry.capabilities("nope").is_none());
     assert!(!registry.supports("nope", InputContent::Text));
+}
+
+/// 默认配置（Provider 插件下沉的公共字段）：build 时浅合并，条目 config 覆盖默认。
+#[tokio::test]
+async fn factory_defaults_merge_under_provider_config() {
+    let ctx = Context::root();
+    let registry = LlmRegistry::new(&ctx);
+    // 捕获合并后 config 的测试工厂：把 base_url|model 编进 adapter id 便于断言
+    registry
+        .register_factory_with_defaults(
+            "with-defaults",
+            |config| {
+                let base = config
+                    .get("base_url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let model = config
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                Ok(Arc::new(MockAdapter::new(
+                    format!("{base}|{model}"),
+                    vec![],
+                )))
+            },
+            json!({ "base_url": "https://default/v1", "model": "default-model" }),
+        )
+        .unwrap();
+
+    // 条目只填差异字段 → 默认补齐
+    assert_eq!(
+        registry
+            .build("with-defaults", &json!({ "model": "mine" }))
+            .unwrap()
+            .id(),
+        "https://default/v1|mine"
+    );
+    // 条目显式覆盖默认
+    assert_eq!(
+        registry
+            .build(
+                "with-defaults",
+                &json!({ "base_url": "https://override/v1" })
+            )
+            .unwrap()
+            .id(),
+        "https://override/v1|default-model"
+    );
+    // 无默认的普通注册不受影响
+    registry
+        .register_factory("plain", |_| Ok(Arc::new(MockAdapter::new("plain", vec![]))))
+        .unwrap();
+    assert_eq!(registry.build("plain", &json!({})).unwrap().id(), "plain");
+}
+
+/// 模型目录（Provider 插件的可用模型清单）：三级合并 插件级 < 模型级 < 条目。
+#[tokio::test]
+async fn catalog_merges_model_level_defaults() {
+    let ctx = Context::root();
+    let registry = LlmRegistry::new(&ctx);
+    registry
+        .register_factory_with_catalog(
+            "cataloged",
+            |config| {
+                // base_url|api_style|model 编进 id 便于断言
+                let base = config
+                    .get("base_url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let style = config
+                    .get("api_style")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let model = config
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                Ok(Arc::new(MockAdapter::new(
+                    format!("{base}|{style}|{model}"),
+                    vec![],
+                )))
+            },
+            json!({ "base_url": "https://fallback/v1", "api_style": "openai" }),
+            vec![
+                ModelDefaults {
+                    model: "go-model".into(),
+                    group: Some("go".into()),
+                    defaults: json!({ "base_url": "https://go/v1", "max_tokens": 4096 }),
+                },
+                ModelDefaults {
+                    model: "zen-model".into(),
+                    group: Some("zen".into()),
+                    defaults: json!({ "base_url": "https://zen/v1", "api_style": "anthropic" }),
+                },
+            ],
+        )
+        .unwrap();
+
+    // 分组查询：组标签与按组模型列表
+    assert_eq!(registry.available_groups("cataloged"), vec!["go", "zen"]);
+    assert_eq!(
+        registry.models_in_group("cataloged", "go"),
+        vec!["go-model"]
+    );
+    assert_eq!(
+        registry.models_in_group("cataloged", "zen"),
+        vec!["zen-model"]
+    );
+    assert!(registry.models_in_group("cataloged", "nope").is_empty());
+
+    // 目录命中：模型级默认覆盖插件级（api_style 继承插件级 openai）
+    assert_eq!(
+        registry
+            .build("cataloged", &json!({ "model": "go-model" }))
+            .unwrap()
+            .id(),
+        "https://go/v1|openai|go-model"
+    );
+    // 另一模型：自带 api_style
+    assert_eq!(
+        registry
+            .build("cataloged", &json!({ "model": "zen-model" }))
+            .unwrap()
+            .id(),
+        "https://zen/v1|anthropic|zen-model"
+    );
+    // 条目显式覆盖模型级
+    assert_eq!(
+        registry
+            .build(
+                "cataloged",
+                &json!({ "model": "go-model", "base_url": "https://override/v1" })
+            )
+            .unwrap()
+            .id(),
+        "https://override/v1|openai|go-model"
+    );
+    // 目录未命中：回落到插件级默认
+    assert_eq!(
+        registry
+            .build("cataloged", &json!({ "model": "ghost" }))
+            .unwrap()
+            .id(),
+        "https://fallback/v1|openai|ghost"
+    );
 }

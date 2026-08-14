@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use cos_core::{Context, Plugin};
 use cos_llm::LlmRegistry;
-use cos_llm_mock::MockAdapter;
 use cos_memory::MemoryStore;
+use cos_test_support::MockAdapter;
 use cos_tools::{ToolRegistry, ToolRun};
 use plugin_memory::{MemoryConfig, MemoryPlugin};
 use serde_json::json;

@@ -17,8 +17,8 @@ use cos_llm::{
     AssistantMessage, ContentBlock, LlmAdapter, LlmRequest, LlmStream, Message, StreamChunk,
     UserMessage,
 };
-use cos_llm_mock::{MockAdapter, MockReply};
 use cos_session::{AbortCause, SessionEventData, TurnEndReason};
+use cos_test_support::{MockAdapter, MockReply};
 
 fn setup() -> (Context, AgentRegistry) {
     let root = Context::root();

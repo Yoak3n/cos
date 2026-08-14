@@ -89,7 +89,7 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 
 ## 阶段 2（桌面陪伴 agent）—— M2 决策
 
-- **真实 LLM 适配器（cos-llm-opencode）**：OpenAI 兼容 `chat/completions`；`LlmAdapter::stream` 是同步方法 → 内部 `tokio::spawn` + unbounded channel 转发（调用方须在 runtime 内，同 mock 语义）。**流式优先、自动非流式兜底**：SSE 在未产出任何 chunk 前遇服务端失败（HTTP 5xx / `{"type":"error"}` 块）→ 重发 `stream:false` 单次请求，`choices[0].message.content`（空则 `reasoning_content`）+ usage 合成一个 chunk；4xx（鉴权/余额）不重试原样报错；已产出部分 chunk 后失败不再兜底（避免重复内容）。错误一律作为流内 `Err` 交付，不进 stderr。
+- **真实 LLM 适配器（cos-llm 的 `openai` feature）**：OpenAI 兼容 `chat/completions`；`LlmAdapter::stream` 是同步方法 → 内部 `tokio::spawn` + unbounded channel 转发（调用方须在 runtime 内，同 mock 语义）。**流式优先、自动非流式兜底**：SSE 在未产出任何 chunk 前遇服务端失败（HTTP 5xx / `{"type":"error"}` 块）→ 重发 `stream:false` 单次请求，`choices[0].message.content`（空则 `reasoning_content`）+ usage 合成一个 chunk；4xx（鉴权/余额）不重试原样报错；已产出部分 chunk 后失败不再兜底（避免重复内容）。错误一律作为流内 `Err` 交付，不进 stderr。
 - **opencode 端点（用户确认 + 实测）**：**订阅网关 base URL = `https://opencode.ai/zen/go/v1`**（OpenCode Go，
   订阅制，OpenAI 兼容；models.dev、bifrost、GoModel 三方实现一致：Bearer + `/v1/chat/completions`，支持 SSE）。
   实测（当日）：`/zen/go/v1/models` 正常；`/zen/go/v1/chat/completions` 对该 key **服务端恒 500**
@@ -125,19 +125,35 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 
 - **构型**：`cos-llm::LlmRegistry`（服务 `"llm"`）与 ToolRegistry/AgentRegistry 同构——宿主装配空
   注册表，`plugins/plugin-llm` 按 yml 配置填充（providers 按 kind 实例化 + chains 后备链），
-  消费者按 id/链 id 解析。工厂经 `cos_llm::llm_factory!("kind", build_fn)`（inventory 静态收集，
-  同 loader `plugin!` 模式，fn 指针 const 可构造）；新 provider = 新 Provider crate + 工厂注册，
-  插件树零改动。Provider crate 只依赖 Definition（cos-llm），插件不得依赖 Provider（接缝纪律保持）。
+  消费者按 id/链 id 解析。~~工厂经 `cos_llm::llm_factory!("kind", build_fn)` inventory 注册~~。
+  **Provider 插件化（P9 修订）**：`llm_factory!` 注册移除——适配器 crate 只提供实现与
+  `build_*`/`KIND` 常量；**Provider 封装插件**（`plugin-opencode` 范本）在 apply 时经
+  `LlmRegistry::register_factory(kind, build)`（程序化注册，inventory 之外的声明式路径）注册；
+  yml 不声明对应插件则 `kind` 不可用（fail loud，plugin-llm 错误列出可用 kinds）。
+  新 provider = 适配器 crate + 封装插件 + 锚点（`builtin_plugin_ids`），宿主核心零 Provider 引用。
 - **后备链语义（FallbackAdapter）**：纯 futures unfold 状态机（无 spawn、cos-llm 不引 tokio）；
   主 provider 在产出任何 chunk 前失败（错误/空流）→ 记错误并切下一个；**已产出后失败 → 原样传播
   不切换**（避免内容重复）；全部未产出 → 交付最后错误。这正是 opencode 网关抖动/流式不稳定的通用解。
 - **loader 宿主服务边界**：loader 的 inject 校验只认插件 provide 表，宿主装配的服务不可见——
   plugin-llm/plugin-memory 不声明 inject，靠 apply 时 `ctx.get` fail loud（同 plugin-todo）；
-  无依赖边时拓扑排序保持配置顺序，故 **llm 条目须在 memory 之前**（文档化）。
+  无依赖边时按**插件类型优先级**排序（见下条），故 **llm 自动先于 memory**（memory 是
+  Other、llm 是 Core）。
+- **插件类型（tier，装配优先级）**：`Plugin::tier()` 声明类型（`PluginTier`：
+  **Provider < Core < Other**，缺省 Other）——loader 注册前**先扫描全部插件**，Kahn
+  拓扑排序的就绪集按 `(tier, 配置下标)` 出队：跨层按类型（Provider 最先注册 LLM 工厂，
+  其次 Core 装配枢纽如 plugin-llm，最后 Other 工具/记忆/RPC），同层保持配置顺序
+  （稳定）；`inject` 边仍是**硬约束**（优先级只作用于无依赖边的节点间）。取代
+  ~~可选依赖边~~（`Plugin::optional_inject` + `provider:*` 标记，已移除）：内置
+  Provider 插件（opencode/deepseek/custom）声明 `Provider` 类型、plugin-llm 声明
+  `Core`——yml 条目顺序写反也能正确装载；**第三方 Provider 插件声明 `Provider`
+  类型即自动排到 llm 前**，无需再改 plugin-llm 的硬编码列表。`--dump-config` 输出
+  各条目 `tier` 字段（扫描结果可见）。
 - **记忆插件 LLM 解析**：`MemoryConfig.llm`（provider/链 id，缺省 "default"）→ 注册表解析；
-  原 `MemoryLlmProvider` 服务删除（回归测试改注册表装配）。cos 无 `--llm-*` 时注册
-  "default" = 空脚本 mock（记忆失败软降级不变）；`--agent-llm <id>` 指定主 agent 提供商/链，
-  `--llm-*` 仍注册 "default" 快捷方式。
+  原 `MemoryLlmProvider` 服务删除（回归测试改注册表装配）。~~cos 无 `--llm-*` 时注册
+  "default" = 空脚本 mock~~（**已废弃（P9）**：隐式 mock 兜底移除；`--llm-*` 在插件树之后
+  注册 "default"，故记忆插件解析失败改为**软降级**（记忆禁用 + stderr 提示，会话照常——
+  "记忆失败不阻塞对话"语义从运行时扩展到装配期））；
+  `--agent-llm <id>` 指定主 agent 提供商/链，`--llm-*` 仍注册 "default" 快捷方式（经 opencode 工厂）。
 - **可输入内容标注（text/image）**：`cos_llm::InputContent { Text, Image }`（serde lowercase，
   可扩展）；`LlmAdapter::input_content() -> &[InputContent]` 缺省 `[Text]`（对象安全、零破坏），
   视觉模型经配置声明 `input_content: [text, image]`（opencode 提供商配置透传）；
@@ -155,10 +171,78 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   `session`/`exit`/`help`，非法行 -32700、未知方法 -32601）；`--prompt` 保持一次性。
   Ctrl-C 语义：一次性 = 取消后退出；REPL = 回复中取消当前 turn 回提示符（消费信号位）、
   提示符处退出；RPC = 取消进行中的 chat、空闲时退出。e2e：spawn 真实二进制走管道协议
-  （`tests/rpc_e2e.rs`，demo mock 确定性脚本）。
+  （`tests/rpc_e2e.rs`，`--llm-*` 指向本地回环 chat/completions 服务器——cos-test-support，
+  真实适配器协议离线驱动）。
 - **零参数启动**：`--config` 缺省 `./cordis.yml`；主 agent LLM 解析优先级
   `--agent-llm` > `--llm-*` 的 "default" > yml `main`（链或提供商）> **yml 恰好一个非 default
-  提供商**（不猜多个）> 确定性演示脚本（`demo_mode` 标记，REPL 横幅 / RPC stderr 提示）。
+  提供商**（不猜多个）> ~~确定性演示脚本~~（**已废弃（P9）**：`demo_mode` 隐式 mock 兜底移除，
+  无任何 LLM 配置 → 启动失败并提示接入方式；Provider 一律声明式插件
+  （`- name: opencode-provider` 等），demo/回放等确定性链路由测试用本地回环服务器承担）。
   opencode 工厂 `streaming` 缺省 **false**（该网关流式不稳定）；plugin-llm 配置支持
   `${ENV_VAR}` 展开（`api_key: "${OPENCODE_API_KEY}"`，缺失 fail loud），密钥不进文件。
   个人 `cordis.yml`（含真实密钥）入 .gitignore。
+- **agent 驱动可替换（"一切皆插件"与"首先是 agent"的平衡）**：turn/step 主循环不再是
+  宿主的硬编码依赖——`cos_agent::agent_factory!`（inventory 静态收集，同 `llm_factory!`
+  构型）注册驱动器工厂；`AgentRegistry::set_driver(id, config)` 按 id 选择并构建活动工厂
+  （`set_factory` 保留为程序化入口）。cos-agent-loop 注册默认驱动 `"loop"`；宿主
+  `--agent-driver <id>`（或 `COS_AGENT_DRIVER`）选择。**关键组件纪律**：agent 驱动与 LLM
+  同属装配期关键组件，缺失/未知 → 报警退出（错误列出可用清单与接入方式），不静默降级；
+  可选能力（记忆/RPC 等）缺失不影响启动。
+- **Provider 默认配置下沉（"少填字段"）**：`LlmRegistry` 工厂槽位增加 `defaults`——
+  `register_factory_with_defaults(kind, build, defaults)` 注册，`build(kind, config)` 时
+  浅合并（条目 config 覆盖默认）。plugin-opencode 据此把**套餐端点**下沉为默认
+  `base_url`（`config.plan: go|zen`，`opencode.ai/zen/go/v1` / `opencode.ai/zen/v1`；
+  `base_url` 可显式覆盖）——provider 条目只需填 `model`/`api_key` 等差异字段。
+  `${ENV_VAR}` 展开上移为 `cos_llm::expand_env`（plugin-llm 与 Provider 插件的 defaults
+  共用）。
+- **模型目录（Provider 内置可用模型清单）**：`LlmRegistry::register_factory_with_catalog`
+  在 `defaults` 之上增加**模型级**默认——`ModelDefaults { model, group, defaults }` 目录按
+  `config.model` 命中，`build` 三级浅合并（插件级 < 模型级 < 条目）。plugin-opencode 内置
+  `BUILTIN_MODELS`（go/zen 套餐模型清单**不一致**：`deepseek-v4-flash` → go 端点、
+  `deepseek-v4-flash-free` → zen 端点；每模型独立声明 `base_url`/`api_style`/`streaming`/
+  `max_tokens`——同一 Provider 下各模型端点与 api 风格可不同），`config.models` 追加/覆盖
+  （同名后者生效，BTreeMap 收集时覆盖）；`api_style` 字段为适配器扩展点（当前实现
+  `openai`）。custom-provider 同样支持 `config.models`。
+- **provider 条目按插件引用（去掉 kind 重复）**：`LlmRegistry` 增加 `provider_plugin!`
+  静态映射（yml 插件名 → kind，inventory 收集，`kind_of_plugin`/`plugin_names` 查询）；
+  plugin-llm 的 provider 条目改 `{ id, plugin: <插件名>, config: { model } }`——kind 不再
+  需要用户写（插件名即语义：`opencode-provider`/`custom-provider`），`model` 必须命中该
+  插件模型目录（fail loud 列出可用模型，`available_models` 查询；目录为空即插件未 apply
+  时跳过校验交 build 报错）。`kind:` 字段保留为向后兼容（模型未命中目录时回落插件级
+  默认）；两者互斥（同时给出 fail loud）。id 由用户自取（`main`/`zen-free`），语义自明。
+- **模型列表由 Provider 插件代码维护（"无需在配置里逐个添加模型"）**：模型目录
+  （`BUILTIN_MODELS` + `config.models` 扩展）是 Provider 插件的固有部分，公开查询面
+  `get_available_models` = 运行时 `LlmRegistry::available_models(kind)` + 插件 crate 的
+  `available_models()` 纯函数。plugin-llm 的 provider 条目**省略 model/models = 插件目录
+  全量展开**（聚合 Provider 一行声明；每个模型注册 `<id>.<model>`，条目 id 成为组链，
+  chains 引用组自动展开）；`model`/`models` 仅作显式裁剪（须命中目录，fail loud 列出）。
+  配置量从"每条模型两三行"降到"每个聚合组一行"。
+- **目录按套餐分组（go/zen 分开）**：`ModelDefaults.group` 给每个模型打分组标签——
+  目录可整体展开，也可**按组选择**：provider 条目 `group: <组>`（如 `{ id: go, plugin:
+  opencode-provider, group: go }`）只展开该组的模型（组间不串，各套餐的模型/端点/预算
+  互不污染）；未知组 fail loud 列出可用分组。查询面新增 `available_groups(kind)` /
+  `models_in_group(kind, group)`（与 `available_models` 同构，插件 crate 层有对应纯函数）。
+  分组与模型清单一样**由 Provider 插件代码维护**（`group:` 无需在配置里定义，只做选择）。
+- **custom-provider 插件（纯配置自定义 vs 代码级自定义）**：新增 `plugins/plugin-custom-provider`
+  （yml 工厂名 `custom-provider`）注册 `kind: custom`——复用 OpenAI 兼容 `chat/completions`
+  适配器（cos-llm 的 `openai` feature），`config.defaults` 可下沉公共字段（含 `${ENV_VAR}` 展开）。
+  覆盖"任意 OpenAI 兼容端点、不想写代码"的场景；"新适配器协议"仍走代码级路径
+  （适配器 crate + 封装插件，plugin-opencode 范本）。两条路径并列，插件树其余部分零改动。
+- **deepseek-provider 插件（官方 API 也是一个 Provider 插件）**：新增 `plugins/plugin-deepseek`
+  （yml 工厂名 `deepseek-provider`）注册 `kind: deepseek`——DeepSeek 官方 API
+  （`api.deepseek.com`，OpenAI 兼容）同样复用 cos-llm 的 `openai` feature 适配器（流式稳定 +
+  `reasoning_content` → Thinking 块）。内置模型目录**无分组**（官方就
+  `deepseek-v4-flash` / `deepseek-v4-pro` 两个模型，无需套餐/家族分组——`group:` 在此
+  Provider 上报错并列出可用模型）；插件级 `api_key`（`${ENV_VAR}` 展开）、
+  `config.models` 扩展目录与 opencode/custom 一致。适配器 id 沿复用实现为 "openai"
+  （kind 才是 "deepseek"）——仅影响 list() 展示。**内置 Provider 的接入成本 = 一个新
+  封装插件 crate + 一个锚点条目**（`src/plugins.rs::builtin_plugin_ids`），宿主与
+  plugin-llm 零改动——插件化装配的兑现。
+- **适配器并入 cos-llm（feature 门控；原 cos-llm-openai crate 删除）**：仅有一个真实
+  适配器（OpenAI 兼容）时，独立 crate 的边际价值低于"少一个目录"的直观性——把
+  `build_openai`/`OpenAiAdapter` 移入 `cos-llm/src/openai.rs`，由 **`openai` feature**
+  （默认关，随 feature 引入 reqwest/tokio）门控；三个 Provider 封装插件与
+  cos-test-support 开启该 feature。**代价（记录在案）**：feature 在 workspace 叠加
+  生效，宿主二进制实际总是带上 reqwest+TLS（名义 lean）；接缝 crate 从此"默认零网络
+  依赖，开 feature 背实现"。若未来出现第二个协议适配器（Anthropic/Gemini 等），
+  独立 crate 模板仍是首选（`cos-llm` 的 openai 模块与其并列，或按需再拆出）。

@@ -13,7 +13,10 @@ mod registry;
 mod types;
 
 pub use inbox::Inbox;
-pub use registry::{AgentRegistry, current_initiator, with_initiator, without_initiator};
+pub use registry::{
+    AgentFactoryEntry, AgentFactoryFn, AgentRegistry, current_initiator, with_initiator,
+    without_initiator,
+};
 pub use types::{
     AbortSignal, AgentCreatedPayload, AgentDisposedPayload, AgentError, AgentErrorPayload,
     AgentFactory, AgentInboxPayload, AgentOptions, AgentStatus, AgentStatusPayload,

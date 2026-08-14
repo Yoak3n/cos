@@ -1,18 +1,22 @@
-//! M2 验收：cos-llm-opencode —— 本地回环 HTTP 服务器打桩：
-//! 流式文本增量 + usage 映射 + [DONE] 收束；服务端失败（5xx / error 块）在无产出时
-//! 自动非流式兜底；4xx 不重试原样报错。
+//! M2 验收：cos-llm 的 `openai` feature（OpenAI 兼容适配器）——本地回环 HTTP 服务器
+//! 打桩：流式文本增量 + usage 映射 + [DONE] 收束；服务端失败（5xx / error 块）在无
+//! 产出时自动非流式兜底；4xx 不重试原样报错。
+//!
+//! 门控：仅在 `openai` feature 开启时编译（`cargo test --workspace` 经 Provider 插件
+//! 自动启用；单独 `cargo test -p cos-llm` 需 `--features openai`）。
+
+#![cfg(feature = "openai")]
 
 use cos_llm::{
     AssistantMessage, ChunkDelta, ContentBlock, InputContent, LlmAdapter, LlmRequest, Message,
-    TokenUsage, ToolCall, ToolResultMessage, UserMessage,
+    OpenAiAdapter, OpenAiConfig, TokenUsage, ToolCall, ToolResultMessage, UserMessage,
 };
-use cos_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-fn adapter(port: u16) -> OpencodeAdapter {
-    OpencodeAdapter::new(OpencodeConfig {
+fn adapter(port: u16) -> OpenAiAdapter {
+    OpenAiAdapter::new(OpenAiConfig {
         base_url: format!("http://127.0.0.1:{port}/v1"),
         api_key: "test-key".into(),
         model: "deepseek-v4-flash-free".into(),
@@ -23,8 +27,8 @@ fn adapter(port: u16) -> OpencodeAdapter {
 }
 
 /// 非流式适配器（单次请求；zen/go 网关默认形态）。
-fn single_adapter(port: u16) -> OpencodeAdapter {
-    OpencodeAdapter::new(OpencodeConfig {
+fn single_adapter(port: u16) -> OpenAiAdapter {
+    OpenAiAdapter::new(OpenAiConfig {
         base_url: format!("http://127.0.0.1:{port}/v1"),
         api_key: "test-key".into(),
         model: "deepseek-v4-flash-free".into(),

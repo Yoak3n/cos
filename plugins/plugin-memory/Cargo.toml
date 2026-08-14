@@ -20,7 +20,7 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-cos-llm-mock = { path = "../../crates/cos-llm-mock" }
+cos-test-support = { path = "../../crates/cos-test-support" }
 cos-agent-loop = { path = "../../crates/cos-agent-loop" }
 cos-system-prompt = { path = "../../crates/cos-system-prompt" }
 tokio.workspace = true

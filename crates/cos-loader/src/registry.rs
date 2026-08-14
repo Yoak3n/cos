@@ -6,12 +6,12 @@
 //! 注册表条目全部是 const 可构造的数据（`&'static str` / 切片 / 函数指针），
 //! 因此 `inventory::submit!` 可以直接收集，无需运行时初始化。
 
-use cos_core::{Context, Plugin, Validate};
+use cos_core::{Context, Plugin, PluginTier, Validate};
 use serde_json::Value;
 
 use crate::error::LoadError;
 
-/// 静态注册的插件工厂条目：`id` / `inject` / `provide` 供建图，
+/// 静态注册的插件工厂条目：`id` / `tier` / `inject` / `provide` 供建图，
 /// `apply` 完成 配置解析 → 校验 → 注册。
 ///
 /// 全部字段为函数指针（const 可构造）：函数体内的 `P::default()` 在装载期才构造实例。
@@ -20,6 +20,8 @@ pub struct PluginRegistrar {
     pub name: &'static str,
     /// 插件 id（同 `Plugin::ID`）。
     pub id: fn() -> &'static str,
+    /// **插件类型**（装配优先级层级：Provider < Core < Other；同类型保持配置顺序）。
+    pub tier: fn() -> PluginTier,
     /// 依赖的服务名。
     pub inject: fn() -> &'static [&'static str],
     /// 提供的服务名。
@@ -57,6 +59,11 @@ pub mod private {
     /// `P::default().id()`。
     pub fn id_of<P: Plugin + Default>() -> &'static str {
         P::default().id()
+    }
+
+    /// `P::default().tier()`。
+    pub fn tier_of<P: Plugin + Default>() -> PluginTier {
+        P::default().tier()
     }
 
     /// `P::default().inject()`。
@@ -109,6 +116,7 @@ macro_rules! plugin {
             $crate::PluginRegistrar {
                 name: $name,
                 id: $crate::private::id_of::<$plugin>,
+                tier: $crate::private::tier_of::<$plugin>,
                 inject: $crate::private::inject_of::<$plugin>,
                 provide: $crate::private::provide_of::<$plugin>,
                 apply: $crate::private::apply_of::<$plugin>,

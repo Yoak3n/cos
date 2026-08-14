@@ -1,0 +1,19 @@
+[package]
+name = "plugin-custom-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "自定义 Provider 插件：纯配置接入任意 OpenAI 兼容 chat/completions 端点（kind: custom）"
+
+[dependencies]
+cos-core = { path = "../../crates/cos-core" }
+cos-llm = { path = "../../crates/cos-llm", features = ["openai"] }
+cos-loader = { path = "../../crates/cos-loader" }
+inventory.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+cos-test-support = { path = "../../crates/cos-test-support" }
+futures.workspace = true
+tokio.workspace = true

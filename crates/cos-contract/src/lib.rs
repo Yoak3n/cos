@@ -17,7 +17,7 @@ pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 兼容规则：major 相同且插件 minor ≤ 宿主 minor 即兼容（见 [`ContractVersion::compatible_with`]）。
 pub const API_VERSION: ContractVersion = ContractVersion {
     major: 0,
-    minor: 2,
+    minor: 3,
     patch: 0,
 };
 
@@ -124,6 +124,22 @@ pub struct HostApi {
         execute: ToolExecute,
         userdata: *mut std::ffi::c_void,
     ) -> Handle,
+    /// Call a host service (0.3.0 addition; P9 bridge - invoke the opaque handle
+    /// returned by [`HostApi::get_service`]).
+    /// `service` must be a value returned by `get_service` (identity checked;
+    /// forged/dangling pointers -> [`ErrorCode::InvalidHandle`]).
+    /// `method` + `args_json` are dispatched to the host-side JSON bridge
+    /// (see `cos_core::JsonBridge`); the result JSON is written to `result_buf`
+    /// (host-allocated, NUL-terminated); on failure an error text is written and
+    /// a non-zero [`ErrorCode`] is returned.
+    pub service_call: unsafe extern "C" fn(
+        ctx: HostCtx,
+        service: *const std::ffi::c_void,
+        method: *const std::ffi::c_char,
+        args_json: *const std::ffi::c_char,
+        result_buf: *mut std::ffi::c_char,
+        result_len: usize,
+    ) -> i32,
 }
 
 /// 工具执行回调（register_tool 的 execute；`run_json`/`result_buf` 仅在调用期间有效）。
@@ -187,6 +203,8 @@ pub enum ErrorCode {
     EffectRegistrationFailed = 5,
     /// 句柄无效。
     InvalidHandle = 6,
+    /// 服务调用失败（0.3.0 追加；详情文本写入 result_buf / error_buf）。
+    CallFailed = 7,
 }
 
 impl ErrorCode {

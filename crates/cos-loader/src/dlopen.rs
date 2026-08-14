@@ -1,26 +1,31 @@
-//! DlopenPluginSource（P8 试点）：运行期加载独立 cdylib 插件（B 形态）。
+//! DlopenPluginSource（P8 试点，P9 服务桥接）：运行期加载独立 cdylib 插件（B 形态）。
 //!
 //! 装载链：libloading 打开 → 解析 `cos_plugin_abi_version` → 版本握手
 //! （不兼容 → fail loud，可读错误）→ `cos_plugin_apply(host, ctx, config, err_buf, err_len)`。
 //!
-//! HostApi 桥（本模块实现宿主侧）：`get_service`（P8 未桥接 → 恒空指针）、
-//! `emit`/`on`（JSON 载荷事件 `PluginEvent`；非 JSON 载荷事件对 dlopen 插件不可见）、
-//! `register_effect`/`free`（fiber 效果，卸载逆序调用 disposer）、
-//! `register_tool`（P8 试点能力：C 回调工具，执行时 ToolRun JSON → C → ToolOutcome JSON）。
+//! HostApi 桥（本模块实现宿主侧）：
+//! - `get_service`/`service_call`（P9 桥接）：按名查 [`cos_core::BridgeRegistry`] 快照，
+//!   返回不透明句柄；`service_call` 以 method + args JSON 调用（身份校验防伪造/悬垂）；
+//! - `emit`/`on`（JSON 载荷事件 `PluginEvent`；非 JSON 载荷事件对 dlopen 插件不可见）；
+//! - `register_effect`/`free`（fiber 效果，卸载逆序调用 disposer）；
+//! - `register_tool`（P8 试点能力：C 回调工具，执行时 ToolRun JSON → C → ToolOutcome JSON）。
+//!
+//! P9 生命周期：宿主状态（HostCtx 指向）与插件实例同生命周期——插件可自持 ctx/host
+//! 指针并在卸载前调用 host 函数（工具回调内服务直连等）。
 //!
 //! P8 简化（见 docs/b-abi.md）：能力不按 inject 裁剪（所有 dlopen 插件获得同一能力集）；
 //! 事件名跨边界泄漏（`&'static str` 契约所致，插件级事件名数量有限）。
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use cos_contract::{
     API_VERSION, ContractVersion, Disposer, ErrorCode, EventCallback, Handle, HostApi, HostCtx,
     PLUGIN_ENTRY_ABI_VERSION, PLUGIN_ENTRY_APPLY, PluginAbiVersion, PluginApply, ToolExecute,
 };
-use cos_core::{Context, EventPayload};
+use cos_core::{Context, EventPayload, JsonBridge};
 use cos_session::ToolError;
 use cos_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
@@ -34,6 +39,9 @@ pub struct DlopenPlugin {
     pub name: String,
     _library: libloading::Library,
     apply: PluginApply,
+    /// 宿主状态（apply 时创建；与实例同生命周期——插件自持的 ctx/host 指针
+    /// 在卸载前始终有效，P9）。
+    state: Mutex<Option<Arc<PluginHostState>>>,
 }
 
 impl DlopenPlugin {
@@ -68,14 +76,26 @@ impl DlopenPlugin {
                 name: name.to_string(),
                 _library: library,
                 apply,
+                state: Mutex::new(None),
             }))
         }
     }
 
     /// 调用插件 apply（HostApi 桥 + 配置 JSON + 错误缓冲）。
     pub fn apply(&self, ctx: &Context, _entry_id: &str, config: Value) -> Result<(), LoadError> {
-        let state = PluginHostState { ctx: ctx.clone() };
-        let host = build_host_api();
+        // P9：宿主状态与实例同生命周期——插件可自持 ctx/host 指针并在卸载前
+        // 调用 host 函数（服务直连、事件等）。桥快照保证 get_service 返回的
+        // 指针在插件生命周期内稳定（注册方卸载不会使指针悬垂）。
+        let bridges = ctx
+            .get::<cos_core::BridgeRegistry>()
+            .map(|registry| registry.snapshot())
+            .unwrap_or_default();
+        let state = Arc::new(PluginHostState {
+            ctx: ctx.clone(),
+            host_api: Box::new(build_host_api()),
+            bridges,
+        });
+        *self.state.lock().unwrap() = Some(state.clone());
         let config_json =
             CString::new(serde_json::to_string(&config).map_err(|error| {
                 LoadError::Other(format!("dlopen 插件配置序列化失败: {error}"))
@@ -84,8 +104,8 @@ impl DlopenPlugin {
         let mut error_buf = vec![0u8; 4096];
         let code = unsafe {
             (self.apply)(
-                &host,
-                &state as *const PluginHostState as HostCtx,
+                state.host_api.as_ref(),
+                Arc::as_ptr(&state) as HostCtx,
                 config_json.as_ptr(),
                 error_buf.as_mut_ptr() as *mut c_char,
                 error_buf.len(),
@@ -94,6 +114,7 @@ impl DlopenPlugin {
         match ErrorCode::from_i32(code) {
             Some(ErrorCode::Ok) => Ok(()),
             _ => {
+                *self.state.lock().unwrap() = None;
                 let message = unsafe { CStr::from_ptr(error_buf.as_ptr() as *const c_char) }
                     .to_string_lossy()
                     .into_owned();
@@ -120,9 +141,35 @@ pub fn check_version(name: &str, plugin: ContractVersion) -> Result<(), LoadErro
     }
 }
 
-/// 插件宿主状态（HostCtx 指向它；apply 期间存活）。
+/// 插件宿主状态（HostCtx 指向它；与插件实例同生命周期——apply 后插件
+/// 自持 ctx/host 指针仍可调用 host 函数，P9）。
 struct PluginHostState {
     ctx: Context,
+    /// HostApi 函数表（与状态同生命周期；插件只读）。
+    host_api: Box<HostApi>,
+    /// JSON 桥快照：get_service 返回的指针指向快照内 Arc 的分配，插件生命周期内稳定。
+    bridges: Vec<(&'static str, Arc<dyn JsonBridge>)>,
+}
+
+/// HostCtx → 宿主状态（空指针 → None）。
+fn state_of(ctx: HostCtx) -> Option<&'static PluginHostState> {
+    if ctx.is_null() {
+        return None;
+    }
+    unsafe { (ctx as *const PluginHostState).as_ref() }
+}
+
+/// 写宿主缓冲（NUL 结尾；超长截断安全）。
+fn write_result(buf: *mut c_char, len: usize, text: &str) {
+    if buf.is_null() || len == 0 {
+        return;
+    }
+    let bytes = text.as_bytes();
+    let copy_len = bytes.len().min(len - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, copy_len);
+        *buf.add(copy_len) = 0;
+    }
 }
 
 /// JSON 载荷事件（dlopen 插件 emit/on 的载荷形态）。
@@ -146,9 +193,71 @@ fn _send_proof() {
 // HostApi 桥（extern "C" 实现）
 // ---------------------------------------------------------------------------
 
-extern "C" fn host_get_service(_ctx: HostCtx, _name: *const c_char) -> *const c_void {
-    // P8 未桥接：get_service 恒空指针（能力裁剪留 P9）
-    ptr::null_mut()
+extern "C" fn host_get_service(ctx: HostCtx, name: *const c_char) -> *const c_void {
+    let Some(state) = state_of(ctx) else {
+        return ptr::null_mut();
+    };
+    if name.is_null() {
+        return ptr::null_mut();
+    }
+    let name = unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .to_string();
+    // P9 桥接：按名查桥快照；未注册 → 空指针。返回的指针指向快照内 Arc 的分配，
+    // 与插件实例同生命周期（状态随实例存活，卸载后不再可调用）。
+    state
+        .bridges
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, bridge)| Arc::as_ptr(bridge) as *const c_void)
+        .unwrap_or(ptr::null_mut())
+}
+
+extern "C" fn host_service_call(
+    ctx: HostCtx,
+    service: *const c_void,
+    method: *const c_char,
+    args_json: *const c_char,
+    result_buf: *mut c_char,
+    result_len: usize,
+) -> i32 {
+    let Some(state) = state_of(ctx) else {
+        return ErrorCode::InvalidHandle as i32;
+    };
+    if service.is_null() || method.is_null() || result_buf.is_null() || result_len == 0 {
+        return ErrorCode::InvalidHandle as i32;
+    }
+    // 身份校验：指针必须来自本宿主状态的 get_service（防伪造/悬垂）
+    let Some(bridge) = state
+        .bridges
+        .iter()
+        .map(|(_, bridge)| bridge)
+        .find(|bridge| Arc::as_ptr(*bridge) as *const c_void == service)
+    else {
+        return ErrorCode::InvalidHandle as i32;
+    };
+    let method = unsafe { CStr::from_ptr(method) }
+        .to_string_lossy()
+        .to_string();
+    let args = if args_json.is_null() {
+        Value::Null
+    } else {
+        let text = unsafe { CStr::from_ptr(args_json) }
+            .to_string_lossy()
+            .to_string();
+        serde_json::from_str(&text).unwrap_or(Value::Null)
+    };
+    match bridge.call(&method, args) {
+        Ok(result) => {
+            let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
+            write_result(result_buf, result_len, &json);
+            ErrorCode::Ok as i32
+        }
+        Err(error) => {
+            write_result(result_buf, result_len, &error.to_string());
+            ErrorCode::CallFailed as i32
+        }
+    }
 }
 
 extern "C" fn host_emit(ctx: HostCtx, name: *const c_char, payload: *const c_char) {
@@ -367,6 +476,7 @@ fn build_host_api() -> HostApi {
         register_effect: host_register_effect,
         free: host_free,
         register_tool: host_register_tool,
+        service_call: host_service_call,
     }
 }
 
@@ -403,5 +513,149 @@ mod tests {
             patch: 0,
         };
         assert!(check_version("ahead", ahead).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // P9 get_service / service_call 桥（直构宿主状态，不加载真实 cdylib）
+    // -----------------------------------------------------------------------
+
+    use super::*;
+    use cos_core::{CoreError, CoreResult, JsonBridge, Service};
+    use std::ffi::CString;
+
+    /// 测试桥：`ping` 回显 method + args；其余方法报错（模拟真实桥的未知方法路径）。
+    struct EchoBridge;
+    impl Service for EchoBridge {
+        const NAME: &'static str = "echo";
+    }
+    impl JsonBridge for EchoBridge {
+        fn call(&self, method: &str, args: Value) -> CoreResult<Value> {
+            if method == "ping" {
+                Ok(serde_json::json!({ "method": method, "args": args }))
+            } else {
+                Err(CoreError::Other(format!("未知 echo 桥方法: {method}")))
+            }
+        }
+    }
+
+    fn state_with_echo() -> Arc<PluginHostState> {
+        Arc::new(PluginHostState {
+            ctx: Context::root(),
+            host_api: Box::new(build_host_api()),
+            bridges: vec![("echo", Arc::new(EchoBridge) as Arc<dyn JsonBridge>)],
+        })
+    }
+
+    fn cptr(text: &str) -> *const c_char {
+        CString::new(text).unwrap().into_raw()
+    }
+
+    #[test]
+    fn get_service_returns_null_for_unknown_name() {
+        let state = state_with_echo();
+        let ctx = Arc::as_ptr(&state) as HostCtx;
+        let service = host_get_service(ctx, cptr("nope"));
+        assert!(service.is_null());
+        // 空 ctx / 空 name → 空指针
+        assert!(host_get_service(std::ptr::null_mut(), cptr("echo")).is_null());
+        assert!(host_get_service(ctx, std::ptr::null()).is_null());
+    }
+
+    #[test]
+    fn service_call_roundtrip() {
+        let state = state_with_echo();
+        let ctx = Arc::as_ptr(&state) as HostCtx;
+        let service = host_get_service(ctx, cptr("echo"));
+        assert!(!service.is_null());
+        let mut buf = vec![0u8; 4096];
+        let code = host_service_call(
+            ctx,
+            service,
+            cptr("ping"),
+            cptr(r#"{"a":1}"#),
+            buf.as_mut_ptr() as *mut c_char,
+            buf.len(),
+        );
+        assert_eq!(code, ErrorCode::Ok as i32);
+        let raw = unsafe { CStr::from_ptr(buf.as_ptr() as *const c_char) }
+            .to_string_lossy()
+            .into_owned();
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["method"], "ping");
+        assert_eq!(value["args"]["a"], 1);
+    }
+
+    #[test]
+    fn service_call_rejects_foreign_or_null_pointers() {
+        let state = state_with_echo();
+        let ctx = Arc::as_ptr(&state) as HostCtx;
+        // 伪造指针 → InvalidHandle
+        let mut buf = vec![0u8; 4096];
+        let code = host_service_call(
+            ctx,
+            &1u8 as *const u8 as *const c_void,
+            cptr("ping"),
+            cptr("{}"),
+            buf.as_mut_ptr() as *mut c_char,
+            buf.len(),
+        );
+        assert_eq!(code, ErrorCode::InvalidHandle as i32);
+        // 空指针 / 空缓冲 → InvalidHandle
+        assert_eq!(
+            host_service_call(
+                ctx,
+                std::ptr::null(),
+                cptr("m"),
+                cptr("{}"),
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len()
+            ),
+            ErrorCode::InvalidHandle as i32
+        );
+        assert_eq!(
+            host_service_call(
+                ctx,
+                std::ptr::null(),
+                cptr("m"),
+                cptr("{}"),
+                std::ptr::null_mut(),
+                0
+            ),
+            ErrorCode::InvalidHandle as i32
+        );
+        // 空 ctx → InvalidHandle
+        assert_eq!(
+            host_service_call(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                cptr("m"),
+                cptr("{}"),
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len()
+            ),
+            ErrorCode::InvalidHandle as i32
+        );
+    }
+
+    #[test]
+    fn service_call_failure_writes_error_text() {
+        let state = state_with_echo();
+        let ctx = Arc::as_ptr(&state) as HostCtx;
+        let service = host_get_service(ctx, cptr("echo"));
+        let mut buf = vec![0u8; 4096];
+        // 未知方法 → CallFailed + 错误文本入缓冲
+        let code = host_service_call(
+            ctx,
+            service,
+            cptr("nope"),
+            cptr("{}"),
+            buf.as_mut_ptr() as *mut c_char,
+            buf.len(),
+        );
+        assert_eq!(code, ErrorCode::CallFailed as i32);
+        let raw = unsafe { CStr::from_ptr(buf.as_ptr() as *const c_char) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(raw.contains("nope"), "错误文本应含方法名: {raw}");
     }
 }

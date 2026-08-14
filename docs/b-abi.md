@@ -1,6 +1,7 @@
 # B-ABI 设计（B 形态插件 FFI 契约）
 
-状态：**P7 草案**（PLAN.md P7 冻结项）。P8 以本表实现 `DlopenPluginSource` + 薄壳 cdylib。
+状态：**P7 草案**（PLAN.md P7 冻结项）。P8 以本表实现 `DlopenPluginSource` + 薄壳 cdylib；
+P9 完成 `get_service`/`service_call` 服务桥接（HostApi 0.3.0，见 §10.5）。
 
 ## 1. 目标与范围
 
@@ -49,24 +50,26 @@ Rust 规范形态见 `cos_contract::HostApi`（`#[repr(C)]`，字段顺序 = ABI
 | 字段 | 类型 | 语义 |
 |---|---|---|
 | `api_version` | `u32` | 宿主侧 `API_VERSION.encode()`（插件校验） |
-| `get_service` | `fn(ctx, name) -> *const c_void` | 按名取服务（不透明句柄）；未注入/未注册 → 空指针 |
+| `get_service` | `fn(ctx, name) -> *const c_void` | 按名取服务（不透明句柄）；未注册 → 空指针 |
 | `emit` | `fn(ctx, name, payload_json)` | 广播事件（同步分发；JSON 调用返回后失效） |
 | `on` | `fn(ctx, name, callback, userdata) -> Handle` | 注册事件监听；`free` 注销 |
 | `register_effect` | `fn(ctx, disposer, userdata) -> Handle` | 注册效果；卸载时**逆序**调用 disposer |
 | `free` | `fn(ctx, handle)` | 释放 on/register_effect 的句柄 |
+| `register_tool`（0.2.0 追加，P8） | `fn(ctx, name, description, parameters_json, execute, userdata) -> Handle` | 注册工具：执行时 ToolRun JSON → C 回调 → ToolOutcome JSON 写宿主缓冲 |
+| `service_call`（0.3.0 追加，P9） | `fn(ctx, service, method, args_json, result_buf, result_len) -> i32` | 调用 `get_service` 返回的句柄（身份校验；伪造/悬垂 → `InvalidHandle`）；method + args JSON → 结果 JSON 写宿主缓冲；失败写错误文本并返回非零 |
 
-**能力按 inject 裁剪**：宿主在 apply 前读插件清单（B 形态 = 清单 JSON，见 §7），
-`get_service` 只对清单 `inject` 声明的服务生效；未注入 → 空指针 + 错误码 `ServiceUnavailable`。
-插件不得绕过（宿主侧强制）。
+**能力按 inject 裁剪（P9 前不做）**：当前所有 dlopen 插件获得同一能力集；`get_service`
+只对注册进 [`BridgeRegistry`]（服务 `"bridges"`）的 JSON 桥生效，未注册 → 空指针。
+按清单 `inject` 裁剪留 P9 后续（清单字段已就位）。
 
 ## 6. 谁分配谁释放（所有权纪律）
 
 | 对象 | 分配 | 释放 | 约束 |
 |---|---|---|---|
-| HostApi 表 | 宿主（栈/堆） | 宿主 | 插件只读；apply 返回后失效 |
+| HostApi 表 | 宿主（堆，随插件状态） | 宿主（随卸载） | 插件只读；**P9 起与插件实例同生命周期**（插件可自持 ctx/host 指针） |
 | config_json / payload_json | 宿主 | 宿主 | 插件只读；调用返回后失效 |
-| error_buf | 宿主 | 宿主 | 插件写入（NUL 结尾 UTF-8），不扩容 |
-| 服务句柄（get_service 返回值） | 宿主 | 宿主（随卸载） | 插件不得解引用/释放 |
+| error_buf / result_buf | 宿主 | 宿主 | 插件写入（NUL 结尾 UTF-8），不扩容 |
+| 服务句柄（get_service 返回值） | 宿主 | 宿主（随卸载） | 插件不得解引用/释放；仅可回传 `service_call` |
 | Handle（on/register_effect） | 宿主 | `free` 或卸载 | 插件不得重复 free |
 | 事件回调 userdata | 插件 | 插件（disposer） | 宿主原样回传 |
 
@@ -119,9 +122,34 @@ P8 简化（记录在案）：能力不按 inject 裁剪（所有 dlopen 插件�
 暂为空（拓扑排序按 entry 自身声明）。
 
 验证（`tests/dlopen_e2e.rs`）：`- name: ./target/debug/plugin_todo_dlopen.dll` 装载 →
-demo 模式 mock LLM 调用 todo_write → dlopen 工具经 C 回调执行 → 结果
-（"已写入 1 条任务"）回流会话日志 → 不变量全过 → 卸载逆序 → disposer 写 marker。
+`--llm-*` 指向本地回环 chat/completions 服务器（cos-test-support，脚本：tool_use 调
+todo_write → 文本）→ dlopen 工具经 C 回调执行 → 结果（"已写入 1 条任务"）回流会话日志
+→ 不变量全过 → 卸载逆序 → disposer 写 marker。
 
-## 11. 安全边界（P9 前不做）
+## 10.5 P9 服务桥接（已落地）
 
-验签/哈希校验、沙箱、运行时重载——明确不做（PLAN §0 非目标）。P8 只证明机制，不声称安全。
+状态：**完成**。`get_service` 从恒空指针变为真实服务查找，配套新增 `service_call`：
+
+1. **HostApi 0.3.0**：表尾追加 `service_call`（method + args JSON → 结果 JSON 写宿主缓冲；
+   服务句柄身份校验：伪造/悬垂 → `InvalidHandle`；桥调用失败 → `CallFailed`（=7，错误文本入缓冲））
+2. **`cos-core::JsonBridge` / `BridgeRegistry`**（服务 `"bridges"`）：宿主侧 JSON 桥接口与注册表；
+   桥名约定 = `Service::NAME`。`JsonBridge` 不继承 `Service`（其关联常量 `NAME` 使 trait
+   非 dyn-compatible，见 §9 豁免条款），对象安全约束为 `Send + Sync + 'static`
+3. **内置桥**：`cos-tools` 为 `ToolRegistry` 实现桥（`list` → 工具清单 JSON）；
+   `cos-llm` 为 `LlmRegistry` 实现桥（`kinds` / `supports`）；宿主 `assemble` 装配时注册。
+   第三方服务实现 `JsonBridge` 后经 `ctx.get::<BridgeRegistry>()?.register(...)` 开放给 B 形态
+4. **宿主状态生命周期**：`PluginHostState`（HostCtx 指向）改为与插件实例同生命周期
+   （`DlopenPlugin` 持有）；HostApi 表随状态存活——插件可自持 ctx/host 指针，
+   在工具回调等 apply 之后的时机调用 host 函数（服务直连、事件等）
+5. **桥快照**：dlopen 装载时对 `BridgeRegistry` 做 Arc 快照，`get_service` 返回的指针
+   指向快照内 Arc 的分配——注册方卸载不会使指针悬垂
+6. **薄壳演示**：`plugin-todo-dlopen` 工具回调内经 `get_service("tools")` +
+   `service_call("list")` 查询宿主工具清单，数量并入结果文本（"tools=N"），
+   `tests/dlopen_e2e.rs` 断言回流会话日志（端到端验证整条 JSON 桥链路）
+
+P9 未做（记录在案）：能力按清单 `inject` 裁剪（当前同一能力集）；`cos_plugin_validate` 入口；
+服务句柄的按名缓存与跨插件复用优化。
+
+## 11. 安全边界（明确不做）
+
+验签/哈希校验、沙箱、运行时重载——明确不做（PLAN §0 非目标）。P8/P9 只证明机制，不声称安全。

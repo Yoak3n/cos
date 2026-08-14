@@ -1,25 +1,8 @@
-//! cos-llm-mock —— 确定性脚本化 mock 适配器（测试与回放，P3）。
-//!
-//! 语义：脚本 = 预设回复列表；每次 `stream()` 按**调用序号**取下一个预设回复
-//! 并流式产出其 chunks（同一脚本 → 同一输出，跨实例确定）。脚本耗尽后流产出 `Err`。
-//! （计划 §5 的"按输入哈希选择"为备选方案，A 形态用序号方案即可。）
-//!
-//! LLM 统一管理：本 crate 经 `llm_factory!("mock", build_mock)` 注册提供商工厂
-//! （空脚本 → 任何调用即失败，适合后备链测试与占位）。
+//! 确定性脚本化 mock LLM 适配器（迁移自 cos-llm-mock；测试与回放专用）。
 
-#![warn(missing_docs)]
-
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cos_llm::{LlmAdapter, LlmError, LlmRequest, LlmStream, StreamChunk};
-
-/// 提供商工厂构建函数（`llm_factory!` 注册）：配置忽略 → 空脚本 mock（调用即失败）。
-pub fn build_mock(_config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError> {
-    Ok(Arc::new(MockAdapter::new("mock", vec![])))
-}
-
-cos_llm::llm_factory!("mock", build_mock);
 
 /// 一次预设回复：按顺序流出的 chunk 序列。
 #[derive(Debug, Clone)]
@@ -96,5 +79,60 @@ impl LlmAdapter for MockAdapter {
                 }))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cos_llm::ChunkDelta;
+    use futures::StreamExt;
+
+    /// 脚本按调用序号推进；耗尽后流出错。
+    #[tokio::test]
+    async fn script_replies_in_order_then_errors() {
+        let adapter = MockAdapter::new(
+            "t",
+            vec![
+                MockReply::new(vec![StreamChunk::text("你"), StreamChunk::text("好")]),
+                MockReply::text("回"),
+            ],
+        );
+        let request = LlmRequest::default();
+        let mut stream = adapter.stream(&request);
+        let mut first = String::new();
+        while let Some(item) = stream.next().await {
+            let chunk = item.unwrap();
+            if let ChunkDelta::Text { text } = chunk.delta {
+                first.push_str(&text);
+            }
+        }
+        assert_eq!(first, "你好");
+
+        let mut stream = adapter.stream(&request);
+        let mut second = String::new();
+        while let Some(item) = stream.next().await {
+            let chunk = item.unwrap();
+            if let ChunkDelta::Text { text } = chunk.delta {
+                second.push_str(&text);
+            }
+        }
+        assert_eq!(second, "回");
+
+        // 脚本耗尽 → 流 Err
+        let mut stream = adapter.stream(&request);
+        let item = stream.next().await.unwrap();
+        assert!(item.is_err());
+        assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn exhausted_and_reset() {
+        let adapter = MockAdapter::new("t", vec![MockReply::text("x")]);
+        assert!(!adapter.exhausted());
+        let _ = adapter.stream(&LlmRequest::default());
+        assert!(adapter.exhausted());
+        adapter.reset();
+        assert!(!adapter.exhausted());
     }
 }

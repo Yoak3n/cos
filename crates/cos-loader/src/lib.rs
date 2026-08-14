@@ -28,5 +28,5 @@ pub use registry::{PluginRegistrar, available_plugins, resolve_factory};
 /// `plugin!` 宏的内部实现（`#[doc(hidden)]`，勿直接使用）。
 #[doc(hidden)]
 pub mod private {
-    pub use crate::registry::private::{apply_of, id_of, inject_of, provide_of};
+    pub use crate::registry::private::{apply_of, id_of, inject_of, provide_of, tier_of};
 }

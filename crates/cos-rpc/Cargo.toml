@@ -18,4 +18,4 @@ tokio.workspace = true
 
 [dev-dependencies]
 cos-agent-loop = { path = "../cos-agent-loop" }
-cos-llm-mock = { path = "../cos-llm-mock" }
+cos-test-support = { path = "../cos-test-support" }

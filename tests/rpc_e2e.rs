@@ -1,7 +1,9 @@
-//! RPC 模式端到端（pi 协议对齐）：spawn 真实二进制（demo.yml + 确定性 mock LLM），
+//! RPC 模式端到端（pi 协议对齐）：spawn 真实二进制（demo.yml + 本地回环
+//! chat/completions 服务器，`--llm-*` 指向——真实适配器协议），
 //! 验证：prompt 异步接受 → 事件流（message_update 文本增量 / tool_execution_* /
 //! turn_* / agent_start|end|settled）→ get_* 状态命令 → 错误与解析失败 → exit。
 
+use cos_test_support::{ChatReply, spawn_sync};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
@@ -21,6 +23,16 @@ fn read_line(reader: &mut BufReader<std::process::ChildStdout>) -> serde_json::V
 
 #[test]
 fn rpc_mode_pi_protocol_prompt_events_state_exit() {
+    // 本地 chat/completions 服务器：tool_use(todo_write) → 文本回复
+    let (port, server_thread) = spawn_sync(vec![
+        ChatReply::ToolUse {
+            id: "c1".into(),
+            name: "todo_write".into(),
+            arguments: r#"{"todos":[{"content":"演示任务","status":"in_progress"}]}"#.into(),
+        },
+        ChatReply::Text("已记录演示任务。".into()),
+    ]);
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_cos"))
         .args([
             "--config",
@@ -29,6 +41,13 @@ fn rpc_mode_pi_protocol_prompt_events_state_exit() {
             "--session",
             "rpc-e2e",
             "--no-save",
+            "--llm-base-url",
+            &format!("http://127.0.0.1:{port}/v1"),
+            "--llm-model",
+            "test-model",
+            "--llm-api-key",
+            "test-key",
+            "--llm-no-stream",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -184,4 +203,5 @@ fn rpc_mode_pi_protocol_prompt_events_state_exit() {
     assert_eq!(response["success"], true);
     let status = child.wait().unwrap();
     assert!(status.success(), "exit 后应优雅退出: {status:?}");
+    let _ = server_thread.join(); // 服务器脚本已消费完，线程收束
 }

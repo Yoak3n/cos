@@ -909,8 +909,8 @@ mod tests {
     use cos_llm::{
         AssistantMessage, ChunkDelta, ContentBlock, LlmAdapter, StreamChunk, TokenUsage,
     };
-    use cos_llm_mock::{MockAdapter, MockReply};
     use cos_session::{Session, SessionEventData, TurnEndReason};
+    use cos_test_support::{MockAdapter, MockReply};
     use serde_json::{Value, json};
 
     use super::{Command, EventForwarder, dispatch};

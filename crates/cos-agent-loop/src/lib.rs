@@ -717,6 +717,16 @@ impl Agent for LoopAgent {
 #[derive(Default)]
 pub struct LoopFactory;
 
+/// 默认 agent 驱动 id（`--agent-driver <id>` 选择键；宿主锚点用）。
+pub const LOOP_DRIVER_ID: &str = "loop";
+
+/// 驱动工厂构建函数（`agent_factory!` 注册）：配置忽略 → [`LoopFactory`]。
+pub fn build_loop(_config: &serde_json::Value) -> Result<Arc<dyn AgentFactory>, AgentError> {
+    Ok(Arc::new(LoopFactory))
+}
+
+cos_agent::agent_factory!("loop", build_loop);
+
 impl AgentFactory for LoopFactory {
     fn create(
         &self,

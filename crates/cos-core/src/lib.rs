@@ -11,6 +11,7 @@
 
 #![warn(missing_docs)]
 
+mod bridge;
 mod context;
 mod effect;
 mod error;
@@ -21,6 +22,7 @@ mod registry;
 mod scope;
 mod service;
 
+pub use bridge::{BridgeRegistry, JsonBridge};
 pub use context::{Context, Target};
 pub use effect::EffectHandle;
 pub use error::{CoreError, CoreResult};
@@ -28,6 +30,6 @@ pub use events::{
     Decision, DispatchKind, EventName, EventPayload, WaterfallDefault, WaterfallListener,
 };
 pub use fiber::Fiber;
-pub use plugin::{Plugin, Validate};
+pub use plugin::{Plugin, PluginTier, Validate};
 pub use scope::{ScopeKey, ScopeTarget};
 pub use service::Service;

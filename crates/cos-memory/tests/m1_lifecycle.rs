@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use cos_llm_mock::{MockAdapter, MockReply};
 use cos_memory::{
     ApplyOutcome, MemoryStore, demote_topic, inventory_topics, now_ms, recall_memories,
     remember_fact, turn_pair_from_text,
 };
+use cos_test_support::{MockAdapter, MockReply};
 
 const DAY: i64 = 86_400_000;
 

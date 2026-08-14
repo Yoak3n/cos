@@ -9,8 +9,8 @@ use cos_agent::{Agent, AgentOptions, AgentRegistry, CreateAgentOptions};
 use cos_agent_loop::LoopFactory;
 use cos_core::Context;
 use cos_llm::{LlmAdapter, UserMessage};
-use cos_llm_mock::{MockAdapter, MockReply};
 use cos_session::SessionEventData;
+use cos_test_support::{MockAdapter, MockReply};
 
 fn msg(id: &str, content: &str) -> UserMessage {
     UserMessage {

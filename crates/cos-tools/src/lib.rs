@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use cos_core::{Context, CoreError, CoreResult, Service};
+use cos_core::{Context, CoreError, CoreResult, JsonBridge, Service};
 use cos_session::ToolError;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -260,5 +260,34 @@ impl ToolRegistry {
             })
             .await
             .unwrap_or(outcome)
+    }
+}
+
+/// JSON 桥（P9）：B 形态插件经 `get_service("tools")` + `service_call` 调用。
+///
+/// 方法集：
+/// - `list`（无参数）→ 工具清单 `[{name, description, parameters}]`（名字序）。
+impl JsonBridge for ToolRegistry {
+    fn call(&self, method: &str, args: serde_json::Value) -> CoreResult<serde_json::Value> {
+        match method {
+            "list" => {
+                if !args.is_null() && !args.as_object().is_some_and(|object| object.is_empty()) {
+                    return Err(CoreError::Other("tools.list 不接受参数".into()));
+                }
+                let tools: Vec<serde_json::Value> = self
+                    .list()
+                    .into_iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "name": tool.name(),
+                            "description": tool.description(),
+                            "parameters": tool.parameters(),
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::Value::Array(tools))
+            }
+            other => Err(CoreError::Other(format!("未知 tools 桥方法: {other}"))),
+        }
     }
 }

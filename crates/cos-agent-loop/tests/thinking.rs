@@ -7,8 +7,8 @@ use cos_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
 use cos_agent_loop::LoopFactory;
 use cos_core::Context;
 use cos_llm::{ChunkDelta, ContentBlock, LlmAdapter, StreamChunk, UserMessage};
-use cos_llm_mock::{MockAdapter, MockReply};
 use cos_session::SessionEventData;
+use cos_test_support::{MockAdapter, MockReply};
 
 #[tokio::test]
 async fn thinking_chunks_are_assembled_into_separate_blocks() {

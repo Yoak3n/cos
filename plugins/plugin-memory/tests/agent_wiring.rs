@@ -11,10 +11,10 @@ use cos_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
 use cos_agent_loop::LoopFactory;
 use cos_core::{Context, Plugin};
 use cos_llm::{LlmRegistry, UserMessage};
-use cos_llm_mock::{MockAdapter, MockReply};
 use cos_memory::MemoryStore;
 use cos_session::SessionEventData;
 use cos_system_prompt::PromptSections;
+use cos_test_support::{MockAdapter, MockReply};
 use cos_tools::ToolRegistry;
 use plugin_memory::{MemoryConfig, MemoryPlugin};
 

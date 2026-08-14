@@ -5,7 +5,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use cos_core::{Context, CoreError, EffectHandle, Plugin, Service, Validate};
+use cos_core::{Context, CoreError, EffectHandle, Plugin, PluginTier, Service, Validate};
 use cos_loader::{self as loader, LoadError, Profile};
 use serde::Deserialize;
 
@@ -203,6 +203,107 @@ impl Plugin for CyclicB {
 }
 loader::plugin!("cycler-b", CyclicB);
 
+// —— 插件类型（tier）：注册前扫描按类型分配优先级（Provider < Core < Other） ——
+
+/// Provider 类型插件（模拟 Provider 插件：注册 LLM 工厂等）。
+#[derive(Default)]
+struct TieredProviderPlugin;
+impl Plugin for TieredProviderPlugin {
+    fn id(&self) -> &'static str {
+        "plugin-tiered-provider"
+    }
+    type Config = NoConfig;
+    fn tier(&self) -> PluginTier {
+        PluginTier::Provider
+    }
+    fn apply(&self, ctx: &Context, _config: &Self::Config) -> Result<(), CoreError> {
+        ctx.fiber()
+            .push(EffectHandle::new(|| push_unload("tiered-provider")));
+        Ok(())
+    }
+}
+loader::plugin!("tiered-provider", TieredProviderPlugin);
+
+/// Core 类型插件（模拟 plugin-llm：装配枢纽）。
+#[derive(Default)]
+struct TieredCorePlugin;
+impl Plugin for TieredCorePlugin {
+    fn id(&self) -> &'static str {
+        "plugin-tiered-core"
+    }
+    type Config = NoConfig;
+    fn tier(&self) -> PluginTier {
+        PluginTier::Core
+    }
+    fn apply(&self, ctx: &Context, _config: &Self::Config) -> Result<(), CoreError> {
+        ctx.fiber()
+            .push(EffectHandle::new(|| push_unload("tiered-core")));
+        Ok(())
+    }
+}
+loader::plugin!("tiered-core", TieredCorePlugin);
+
+/// Other 类型插件（缺省类型；模拟工具/记忆/RPC 插件）。
+#[derive(Default)]
+struct TieredOtherPlugin;
+impl Plugin for TieredOtherPlugin {
+    fn id(&self) -> &'static str {
+        "plugin-tiered-other"
+    }
+    type Config = NoConfig;
+    fn apply(&self, ctx: &Context, _config: &Self::Config) -> Result<(), CoreError> {
+        ctx.fiber()
+            .push(EffectHandle::new(|| push_unload("tiered-other")));
+        Ok(())
+    }
+}
+loader::plugin!("tiered-other", TieredOtherPlugin);
+
+/// 类型优先级：Provider 最先、Core 次之、Other 最后——与 yml 条目顺序无关。
+#[test]
+fn tier_orders_provider_before_core_before_other_regardless_of_yml_order() {
+    let _guard = lock_tests();
+    unload_log().lock().unwrap().clear();
+    // yml 故意写反：Other 在前、Core 中间、Provider 最后——类型优先级应重排
+    let profile =
+        Profile::parse("- name: tiered-other\n- name: tiered-core\n- name: tiered-provider\n")
+            .unwrap();
+    let app = loader::load(&Context::root(), &profile).unwrap();
+    let names: Vec<&str> = app.instances().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["tiered-provider", "tiered-core", "tiered-other"]
+    );
+    // 卸载仍为 apply 逆序
+    app.dispose();
+    assert_eq!(
+        *unload_log().lock().unwrap(),
+        vec!["tiered-other", "tiered-core", "tiered-provider"]
+    );
+}
+
+/// 同类型内保持配置顺序（稳定；类型优先级只跨层生效）。
+#[test]
+fn tier_preserves_config_order_within_same_tier() {
+    let _guard = lock_tests();
+    let profile = Profile::parse("- name: tiered-other\n- name: demo\n  config: {}\n").unwrap();
+    let app = loader::load(&Context::root(), &profile).unwrap();
+    let names: Vec<&str> = app.instances().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, vec!["tiered-other", "demo"]);
+}
+
+/// 显式依赖边优先于类型：即使 yml 里消费者在前、提供者在后，inject 硬边仍保证
+/// 提供者先装载（类型优先级只作用于无依赖边的节点间）。
+#[test]
+fn inject_edge_overrides_tier() {
+    let _guard = lock_tests();
+    let profile = Profile::parse("- name: todo\n- name: llm\n  config: {}\n").unwrap();
+    let app = loader::load(&Context::root(), &profile).unwrap();
+    let names: Vec<&str> = app.instances().iter().map(|i| i.name.as_str()).collect();
+    // todo inject llm（硬边）：即使 todo 在 yml 里排在前面，llm 仍先装载
+    assert_eq!(names, vec!["llm", "todo"]);
+}
+
 // —— 条目默认值 ——
 
 #[test]
@@ -227,7 +328,8 @@ fn loads_real_yaml_with_dependency_order() {
     let app = loader::load(&root, &profile).unwrap();
 
     let names: Vec<&str> = app.instances().iter().map(|i| i.name.as_str()).collect();
-    assert_eq!(names, vec!["llm", "demo", "agent-loop", "todo"]);
+    // llm 先装载（agent-loop/todo 的 inject 硬边）；其余同类型按配置顺序
+    assert_eq!(names, vec!["llm", "agent-loop", "todo", "demo"]);
 
     // 服务存在（依赖就绪才激活的产物）
     let llm = app.root().get::<LlmService>().unwrap();
@@ -241,7 +343,7 @@ fn loads_real_yaml_with_dependency_order() {
     app.dispose();
     assert_eq!(
         *unload_log().lock().unwrap(),
-        vec!["todo", "agent-loop", "demo", "llm"]
+        vec!["demo", "todo", "agent-loop", "llm"]
     );
 }
 

@@ -1,34 +1,40 @@
 # cos LLM 统一管理演示（plugin-llm）：多 provider + 后备链。
 # 用法：cos --config examples/llm.yml --agent-llm main --prompt "..."
-#   - 主 agent 走后备链 main（opencode-go 优先，未产出即失败自动切 zen-free）
+#   - 主 agent 走后备链 main（go 组优先，未产出即失败自动切 zen 组）
 #   - 记忆插件 llm: main 共用同一条链
 # 注意：api_key 仅为演示占位，请替换为你的 key；切勿提交真实密钥。
-# 条目顺序重要：llm 必须在 memory 之前（注册表由宿主装配，拓扑排序无显式边）。
+# 条目顺序重要：Provider 插件（opencode-provider / deepseek-provider / custom-provider）
+# 必须在 llm 之前；llm 必须在 memory 之前（注册表由宿主装配，拓扑排序无显式边）。
+# 只用一个官方 Provider 时，把 opencode-provider 整段换成 deepseek-provider 即可：
+#   - name: deepseek-provider
+#     config: { api_key: "${DEEPSEEK_API_KEY}" }   # 官方 API，端点/模型目录由插件负责
+#   providers 换成（deepseek 官方就两个模型，无分组）：
+#     - { id: main, plugin: deepseek-provider }                        # 目录全量展开
+#     - { id: pro,  plugin: deepseek-provider, model: deepseek-v4-pro }
+- name: opencode-provider
+  config:
+    api_key: "${OPENCODE_API_KEY}"   # 插件级：端点/模型目录/api_key 全部由本插件负责
+    # 模型列表由插件代码维护（BUILTIN_MODELS + config.models 扩展），
+    # 查询：plugin-opencode::available_models() / LlmRegistry::available_models(kind)
+    # models:
+    #   - model: my-model
+    #     defaults: { base_url: "https://my-gateway/v1", api_style: "openai", streaming: false }
 - name: llm
   config:
     providers:
-      - id: opencode-go
-        kind: opencode
-        config:
-          base_url: "https://opencode.ai/zen/go/v1"
-          model: "deepseek-v4-flash"
-          api_key: "sk-REPLACE_ME"
-          streaming: false
-          # 可输入内容标注（缺省 text；视觉模型声明 image）：
-          # input_content: [text, image]
-      - id: zen-free
-        kind: opencode
-        config:
-          base_url: "https://opencode.ai/zen/v1"
-          model: "deepseek-v4-flash-free"
-          api_key: "sk-REPLACE_ME"
-          streaming: false
-      - id: mock
-        kind: mock
-        config: {}
+      # 省略模型 + group: <组> → 只展开该套餐分组的模型（模型清单由插件代码维护，
+      # 分组查询：plugin-opencode::available_groups() / LlmRegistry::available_groups(kind)）
+      - { id: go, plugin: opencode-provider, group: go }
+      - { id: zen, plugin: opencode-provider, group: zen }
+      # 省略 model/models（无 group）→ 插件目录全量展开（go+zen 全部模型）；条目 id 即组链
+      # - { id: all, plugin: opencode-provider }
+      # 显式裁剪 / 单模型快捷方式（注册 id = 条目 id）
+      # - { id: free, plugin: opencode-provider, models: [deepseek-v4-flash-free] }
+      # - { id: main, plugin: opencode-provider, model: deepseek-v4-flash }
+      # 自定义 Provider：纯配置接任意 OpenAI 兼容端点（无需写代码）
+      # - { id: my-api, plugin: custom-provider }        # custom 目录为空 → 需显式 model
     chains:
-      - id: main
-        providers: [opencode-go, zen-free]
+      - { id: main, providers: [go, zen] }   # 组 id 自动展开为组内模型按序
 - name: todo
 - name: bash
 - name: memory

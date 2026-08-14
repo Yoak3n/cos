@@ -1,9 +1,13 @@
-//! B 形态薄壳试点（P8）：独立 cdylib 形式的 todo 工具。
+//! B 形态薄壳试点（P8，P9 服务直连演示）：独立 cdylib 形式的 todo 工具。
 //!
 //! 导出 `cos_plugin_abi_version` / `cos_plugin_apply`；apply 时经 HostApi 注册
 //! `todo_write` 工具 + 卸载效果（释放状态、写 marker 文件验证 disposer 调用链）+
 //! 事件（验证 emit 桥）。工具执行 = C 回调：解析 ToolRun JSON → 更新状态 →
 //! 把 ToolOutcome JSON 写入宿主缓冲。
+//!
+//! P9 服务直连演示：apply 时自持 `ctx`/`host` 指针（宿主保证与插件实例同生命周期），
+//! 工具回调内经 `get_service("tools")` + `service_call("list")` 查询宿主工具清单，
+//! 把数量并入结果文本（端到端验证 JSON 桥）。
 //!
 //! 纪律：所有 `extern "C"` 入口用 `catch_unwind` 包裹（panic 不跨 FFI）；
 //! 不依赖宿主任何 Rust 类型（只经 B-ABI 契约交互）。
@@ -18,9 +22,10 @@ use cos_tools::{ToolOutcome, ToolRun};
 use serde_json::Value;
 
 /// 工具状态（userdata 指向；disposer 释放）。
-#[derive(Default)]
 struct TodoState {
     count: usize,
+    /// P9：apply 时自持的宿主 ctx/host（与插件实例同生命周期；工具回调内服务直连用）。
+    host: Option<(HostCtx, *const HostApi)>,
 }
 
 /// disposer 载荷：工具状态 + marker 路径（卸载验证用）。
@@ -76,8 +81,11 @@ fn apply(
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    // 1. 注册工具（userdata = 状态指针）
-    let state = Box::into_raw(Box::new(TodoState::default()));
+    // 1. 注册工具（userdata = 状态指针；自持 ctx/host 供工具回调内服务直连）
+    let state = Box::into_raw(Box::new(TodoState {
+        count: 0,
+        host: Some((ctx, host)),
+    }));
     let name = cstr("todo_write");
     let description = cstr("写入任务清单（B 形态薄壳）");
     let parameters = cstr(
@@ -128,7 +136,14 @@ extern "C" fn todo_execute(
             .and_then(Value::as_array)
             .ok_or("参数缺少 todos")?;
         state.count += todos.len();
-        let outcome = ToolOutcome::ok(format!("已写入 {} 条任务", todos.len()));
+        // P9 服务直连：查询宿主工具清单（tools 桥 list），并入结果文本
+        let tools = tools_count(state.host);
+        let outcome = match tools {
+            Some(count) => {
+                ToolOutcome::ok(format!("已写入 {} 条任务（tools={count}）", todos.len()))
+            }
+            None => ToolOutcome::ok(format!("已写入 {} 条任务", todos.len())),
+        };
         let json = serde_json::to_string(&outcome).unwrap_or_else(|_| "{}".into());
         write_text(result_buf, result_len, &json);
         Ok::<i32, String>(0)
@@ -144,6 +159,36 @@ extern "C" fn todo_execute(
             1
         }
     }
+}
+
+/// P9 服务直连：经 `get_service("tools")` + `service_call("list")` 查询宿主工具清单数量。
+/// 任一环节失败（未注册桥/调用失败/结果非法）→ `None`（工具本身不受影响，诚实降级）。
+fn tools_count(host: Option<(HostCtx, *const HostApi)>) -> Option<usize> {
+    let (ctx, host_ptr) = host?;
+    let host = unsafe { &*host_ptr };
+    let service = unsafe { (host.get_service)(ctx, cstr("tools").as_ptr()) };
+    if service.is_null() {
+        return None;
+    }
+    let mut buf = vec![0u8; 8192];
+    let code = unsafe {
+        (host.service_call)(
+            ctx,
+            service,
+            cstr("list").as_ptr(),
+            cstr("{}").as_ptr(),
+            buf.as_mut_ptr() as *mut c_char,
+            buf.len(),
+        )
+    };
+    if code != ErrorCode::Ok as i32 {
+        return None;
+    }
+    let raw = unsafe { CStr::from_ptr(buf.as_ptr() as *const c_char) }
+        .to_string_lossy()
+        .to_string();
+    let tools: Value = serde_json::from_str(&raw).ok()?;
+    tools.as_array().map(|tools| tools.len())
 }
 
 /// 卸载效果：释放状态 + 写 marker 文件。

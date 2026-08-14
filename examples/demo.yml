@@ -1,5 +1,10 @@
-# cos 演示清单：todo + bash 工具 + rpc 插件。
+# cos 演示清单：opencode Provider 插件 + todo + bash 工具 + rpc 插件。
 # 内置服务（tools/system-prompt/invariants/shell/agents/rpc-providers）由 cos 在装载前装配。
+# 注意：cos 不再内置任何 LLM Provider（含 mock）——LLM 一律声明式装配：
+#   - 本清单声明 opencode-provider 插件后，用 --llm-* 指向你的 OpenAI 兼容端点；
+#   - 或声明 plugin-llm 配 providers/chains（见 examples/llm.yml）。
+# 顺序：opencode 须在 llm（plugin-llm）之前。
+- name: opencode-provider
 - name: todo
 - name: bash
 - name: rpc

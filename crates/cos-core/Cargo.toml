@@ -8,6 +8,7 @@ description = "cos 插件化内核：Context、服务注册表、事件总线、
 [dependencies]
 futures.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

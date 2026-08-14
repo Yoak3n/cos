@@ -1,8 +1,8 @@
-//! cos-llm-opencode —— OpenAI 兼容 `chat/completions` 适配器（Provider，M2）。
+//! OpenAI 兼容 `chat/completions` 适配器（Provider 实现；`cos-llm` 的 **`openai` feature**）。
 //!
-//! 接缝纪律：只依赖 Definition crate（cos-llm）。`stream()` 是同步方法（[`LlmAdapter`]
-//! 对象安全接缝），故内部 `tokio::spawn` 转发：请求在后台任务执行，chunk 经
-//! unbounded channel 流入返回的流；调用方必须在 tokio runtime 内。
+//! `stream()` 是同步方法（[`LlmAdapter`] 对象安全接缝），故内部 `tokio::spawn` 转发：
+//! 请求在后台任务执行，chunk 经 unbounded channel 流入返回的流；调用方必须在
+//! tokio runtime 内。
 //!
 //! 协议：`POST {base_url}/chat/completions`，优先 `stream: true`（SSE 逐行
 //! `data: {…}`，`choices[0].delta.content` 累积为文本块，usage 块映射 [`TokenUsage`]，
@@ -14,13 +14,18 @@
 //! （`reasoning_content`）作为独立的 Thinking 增量流式转发，与正文（Text）分开，
 //! 由消费方决定是否展示——不再混入文本、也不再丢弃。
 //!
-//! LLM 统一管理：本 crate 经 `llm_factory!("opencode", build_opencode)` 注册提供商工厂。
-
-#![warn(missing_docs)]
+//! 插件化装配：本模块是 Provider **实现**（[`build_openai`]），**不含注册**——kind 由
+//! 封装插件声明（plugin-opencode 的 `kind: opencode`、plugin-deepseek 的 `kind:
+//! deepseek`、plugin-custom-provider 的 `kind: custom` 均复用本适配器），在 apply 时经
+//! [`LlmRegistry::register_factory`] 声明式注册。**依赖纪律**：本模块随 `openai`
+//! feature 引入 reqwest/tokio——只有 Provider 封装插件开启该 feature，普通消费者
+//! （memory/agent 等）用默认特性即零网络依赖。
+//!
+//! 历史：原为独立 crate `cos-llm-openai`（P9 决策：并入 cos-llm 的 feature 门控模块）。
 
 use std::sync::Arc;
 
-use cos_llm::{
+use crate::{
     ChunkDelta, ContentBlock, InputContent, LlmAdapter, LlmError, LlmRequest, LlmStream, Message,
     StreamChunk, TokenUsage, ToolCall,
 };
@@ -28,7 +33,9 @@ use futures::StreamExt;
 use serde::Deserialize;
 
 /// 提供商工厂构建函数（`llm_factory!` 注册）：配置 `{base_url, api_key, model, streaming?, max_tokens?}`。
-pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError> {
+///
+/// 通用 OpenAI 兼容构建器——封装插件（opencode/deepseek/custom）注册为各自的 kind。
+pub fn build_openai(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError> {
     /// 提供商配置（插件 yml 里的 `config` 段）。
     #[derive(Deserialize)]
     struct ProviderConfig {
@@ -53,13 +60,13 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
         Some(4096)
     }
     let config: ProviderConfig = serde_json::from_value(config.clone())
-        .map_err(|error| LlmError::Failure(format!("opencode 提供商配置无效: {error}")))?;
+        .map_err(|error| LlmError::Failure(format!("OpenAI 兼容提供商配置无效: {error}")))?;
     let input_content = if config.input_content.is_empty() {
         vec![InputContent::Text]
     } else {
         config.input_content
     };
-    Ok(Arc::new(OpencodeAdapter::new(OpencodeConfig {
+    Ok(Arc::new(OpenAiAdapter::new(OpenAiConfig {
         base_url: config.base_url,
         api_key: config.api_key,
         model: config.model,
@@ -69,12 +76,10 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
     })))
 }
 
-cos_llm::llm_factory!("opencode", build_opencode);
-
 /// 适配器配置。
 #[derive(Debug, Clone)]
-pub struct OpencodeConfig {
-    /// base URL（不带 `/chat/completions` 后缀，如 `https://opencode.ai/zen/go/v1`）。
+pub struct OpenAiConfig {
+    /// base URL（不带 `/chat/completions` 后缀，如 `https://api.deepseek.com`）。
     pub base_url: String,
     /// API key。
     pub api_key: String,
@@ -92,8 +97,8 @@ pub struct OpencodeConfig {
 
 /// OpenAI 兼容适配器（流式优先、非流式自动兜底）。
 #[derive(Clone)]
-pub struct OpencodeAdapter {
-    config: OpencodeConfig,
+pub struct OpenAiAdapter {
+    config: OpenAiConfig,
     client: reqwest::Client,
 }
 
@@ -191,9 +196,9 @@ enum StepError {
     Fatal(String),
 }
 
-impl OpencodeAdapter {
+impl OpenAiAdapter {
     /// 由配置构造（默认请求头：Bearer + JSON）。
-    pub fn new(config: OpencodeConfig) -> Self {
+    pub fn new(config: OpenAiConfig) -> Self {
         Self {
             config,
             client: reqwest::Client::new(),
@@ -311,9 +316,9 @@ impl OpencodeAdapter {
     }
 }
 
-impl LlmAdapter for OpencodeAdapter {
+impl LlmAdapter for OpenAiAdapter {
     fn id(&self) -> &str {
-        "opencode"
+        "openai"
     }
 
     fn input_content(&self) -> &[InputContent] {

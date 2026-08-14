@@ -8,11 +8,10 @@ description = "cos CLI 宿主（插件化主干，A 形态）"
 [dependencies]
 cos-agent = { path = "crates/cos-agent" }
 cos-agent-loop = { path = "crates/cos-agent-loop" }
+cos-contract = { path = "crates/cos-contract" }
 cos-core = { path = "crates/cos-core" }
 cos-invariants = { path = "crates/cos-invariants" }
 cos-llm = { path = "crates/cos-llm" }
-cos-llm-mock = { path = "crates/cos-llm-mock" }
-cos-llm-opencode = { path = "crates/cos-llm-opencode" }
 cos-loader = { path = "crates/cos-loader" }
 cos-memory = { path = "crates/cos-memory" }
 cos-rpc = { path = "crates/cos-rpc" }
@@ -20,15 +19,45 @@ cos-session = { path = "crates/cos-session" }
 cos-shell = { path = "crates/cos-shell" }
 cos-system-prompt = { path = "crates/cos-system-prompt" }
 cos-tools = { path = "crates/cos-tools" }
-plugin-bash = { path = "plugins/plugin-bash" }
-plugin-llm = { path = "plugins/plugin-llm" }
-plugin-memory = { path = "plugins/plugin-memory" }
-plugin-rpc = { path = "plugins/plugin-rpc" }
-plugin-todo = { path = "plugins/plugin-todo" }
+plugin-bash = { path = "plugins/plugin-bash", optional = true }
+plugin-custom-provider = { path = "plugins/plugin-custom-provider", optional = true }
+plugin-deepseek = { path = "plugins/plugin-deepseek", optional = true }
+plugin-llm = { path = "plugins/plugin-llm", optional = true }
+plugin-memory = { path = "plugins/plugin-memory", optional = true }
+plugin-opencode = { path = "plugins/plugin-opencode", optional = true }
+plugin-rpc = { path = "plugins/plugin-rpc", optional = true }
+plugin-todo = { path = "plugins/plugin-todo", optional = true }
 futures.workspace = true
+inventory.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+cos-test-support = { path = "crates/cos-test-support" }
+
+[features]
+# 默认 = 全插件（CLI 形态）。库嵌入可 `default-features = false` 只取框架核心，
+# 再按需启用单个插件 feature（如 features = ["plugin-memory"]）。
+default = ["full"]
+full = [
+    "plugin-bash",
+    "plugin-custom-provider",
+    "plugin-deepseek",
+    "plugin-llm",
+    "plugin-memory",
+    "plugin-opencode",
+    "plugin-rpc",
+    "plugin-todo",
+]
+plugin-bash = ["dep:plugin-bash"]
+plugin-custom-provider = ["dep:plugin-custom-provider"]
+plugin-deepseek = ["dep:plugin-deepseek"]
+plugin-llm = ["dep:plugin-llm"]
+plugin-memory = ["dep:plugin-memory"]
+plugin-opencode = ["dep:plugin-opencode"]
+plugin-rpc = ["dep:plugin-rpc"]
+plugin-todo = ["dep:plugin-todo"]
 
 [workspace]
 members = ["crates/*", "plugins/*"]

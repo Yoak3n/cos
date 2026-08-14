@@ -114,6 +114,14 @@ pub enum AgentError {
     /// 已有活动工作（维护任务重入）。
     #[error("agent \"{0}\" already has active work")]
     Busy(String),
+    /// 未知 agent 驱动 id（fail loud；available 列出已注册驱动）。
+    #[error("agent driver \"{id}\" is not registered (available: {available})")]
+    UnknownDriver {
+        /// 请求的驱动 id。
+        id: String,
+        /// 已注册驱动 id（逗号分隔，排序稳定）。
+        available: String,
+    },
     /// 其他失败。
     #[error("{0}")]
     Other(String),

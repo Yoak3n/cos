@@ -653,9 +653,17 @@ impl Plugin for MemoryPlugin {
             .get::<LlmRegistry>()
             .map_err(|_| CoreError::ServiceNotFound("llm"))?;
         let llm_id = config.llm.as_deref().unwrap_or("default");
-        let adapter = registry
-            .resolve_id(llm_id)
-            .map_err(|error| CoreError::Other(format!("LLM 提供商 '{llm_id}' 不可用: {error}")))?;
+        let adapter = match registry.resolve_id(llm_id) {
+            Ok(adapter) => adapter,
+            // 软降级（"记忆失败不阻塞对话"，M2 语义）：LLM 未就绪（如 --llm-* 在插件树后
+            // 才注册 "default"）→ 记忆禁用，会话照常。显式配置的 llm id 缺失同样降级。
+            Err(error) => {
+                eprintln!(
+                    "[memory] LLM 提供商 '{llm_id}' 不可用，记忆功能禁用（可用时重新声明装配）: {error}"
+                );
+                return Ok(());
+            }
+        };
         let store = MemoryStore::open(&config.db_path, adapter)
             .map_err(|error| CoreError::Other(error.to_string()))?;
         ctx.provide(store)?;

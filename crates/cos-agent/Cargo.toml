@@ -10,5 +10,7 @@ cos-core = { path = "../cos-core" }
 cos-llm = { path = "../cos-llm" }
 cos-session = { path = "../cos-session" }
 futures.workspace = true
+inventory.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

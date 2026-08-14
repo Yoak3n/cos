@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use cos_llm_mock::{MockAdapter, MockReply};
 use cos_memory::{MemoryStore, now_ms, turn_pair_from_text};
+use cos_test_support::{MockAdapter, MockReply};
 
 fn temp_db(tag: &str) -> String {
     std::env::temp_dir()

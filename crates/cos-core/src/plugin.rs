@@ -16,9 +16,27 @@ pub trait Validate {
     }
 }
 
+/// **插件类型**（装配优先级层级）：loader 注册前先扫描全部插件，按类型分配基准
+/// 装载顺序——**Provider 最先，其次是 Core，最后 Other**；同类型内保持配置顺序
+/// （稳定）；显式依赖边（`inject`）仍然优先于类型（硬约束）。
+///
+/// 为什么需要：插件之间的真实依赖（`inject`/`provide` 边）之外的"隐含先后"——
+/// 如 plugin-llm 装配 providers 时要求 Provider 插件的工厂已注册、memory 要求
+/// llm 已装配——不再依赖 yml 条目顺序或可选依赖标记，由类型声明直接保证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum PluginTier {
+    /// Provider 插件（注册 LLM 工厂等）：**最先**装载。
+    Provider = 0,
+    /// 核心插件（plugin-llm 等装配枢纽）：次之。
+    Core = 1,
+    /// 其他插件（工具 / 记忆 / RPC 等）：最后。
+    Other = 2,
+}
+
 /// 插件：`inject` / `provide` 声明服务依赖与产出，`apply` 执行注册。
 ///
-/// 对象安全（P7 冻结）：元数据一律关联函数（`id`/`inject`/`provide` 无 self），
+/// 对象安全（P7 冻结）：元数据一律关联函数（`id`/`inject`/`provide`/`tier` 无 self），
 /// 不含关联常量——trait 可作 `dyn` 使用（B 形态 FFI 转发前提）。
 pub trait Plugin: Send + Sync {
     /// 插件 id（同 cordis plugin id；实例方法——关联常量会破坏 dyn-compatible，P7 冻结）。
@@ -26,6 +44,12 @@ pub trait Plugin: Send + Sync {
 
     /// 配置类型：serde 反序列化 + 校验。
     type Config: DeserializeOwned + Validate;
+
+    /// **插件类型**（装配优先级层级，缺省 `Other`）：Provider < Core < Other；
+    /// 同类型保持配置顺序；`inject` 边优先于类型。
+    fn tier(&self) -> PluginTier {
+        PluginTier::Other
+    }
 
     /// 依赖的服务名（无则空）。
     ///

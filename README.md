@@ -4,14 +4,16 @@ Rust 再实现插件化主干："一切皆插件" —— Context 服务仓库、
 事件扩展、可逆效果、会话日志唯一事实源、turn/step 主循环；启动时由 cordis.yml 装配插件树。
 
 - 完整实施计划：`PLAN.md`
+- 配置指南：`docs/configuration.md`
 - 设计决策记录：`docs/decisions.md`
 - 语义权威参考（JS 仓库）：`E:\GitVault\deepseek-harness`（`vendor/cordis`、`packages/core/*`）
 
 ## 布局
 
 ```text
-crates/   # 核心与接缝 crate（cos-core、cos-loader、cos-session、cos-llm、cos-llm-opencode、cos-memory、…）
-plugins/  # A 形态插件（plugin-todo、plugin-bash、plugin-llm、plugin-memory）
+crates/   # 核心与接缝 crate（cos-core、cos-loader、cos-session、cos-llm、cos-memory、…）
+          # cos-test-support：测试支持（MockAdapter + 本地回环 chat/completions 服务器，仅 dev-deps）
+plugins/  # A 形态插件（plugin-todo、plugin-bash、plugin-llm、plugin-opencode、plugin-memory、plugin-rpc）
 src/      # cos CLI 宿主（P6 前为占位二进制）
 ```
 
@@ -31,27 +33,77 @@ cargo deny check   # CI 内执行（本地需 cargo-deny）
 ## 使用（CLI 三形态）
 
 ```bash
-# 零参数一键启动（默认 ./cordis.yml；唯一提供商/ main 链自动使用，无需任何参数）
+# 启动（默认 ./cordis.yml；未配置任何 LLM → 启动失败，提示接入方式）
 cos
 
-# 交互式 REPL（显式指定配置）
+# 交互式 REPL（显式指定配置 + 命令行接入真实 LLM；需 yml 声明 opencode Provider 插件）
 cos --config examples/memory.yml --llm-base-url ... --llm-model ... --llm-api-key ... --llm-no-stream
 
 # stdio JSON-RPC 服务（供外部程序调用；每行一个请求/响应）
-cos --config examples/demo.yml --rpc
+cos --config examples/demo.yml --rpc --llm-base-url ... --llm-model ... --llm-api-key ...
 # 方法：ping / chat {message, images?} / session / exit / help
 
-# 一次性（演示/脚本）
-cos --config examples/demo.yml --prompt "帮我记一条演示 todo"
+# 一次性（演示/脚本；examples/demo.yml 声明了 opencode-provider 插件，需 --llm-* 指向你的端点）
+cos --config examples/demo.yml --prompt "帮我记一条演示 todo" --llm-base-url ... --llm-model ... --llm-api-key ...
 ```
 
 主 agent 的 LLM 解析优先级：`--agent-llm <id>` > `--llm-*` 的 "default" > yml `main` 链/提供商 >
-yml 唯一提供商 > 确定性演示脚本（回落时 REPL/RPC 会提示）。opencode 提供商 `streaming` 缺省 false
-（该网关流式不稳定）；配置值支持 `${ENV_VAR}` 展开（如 `api_key: "${OPENCODE_API_KEY}"`，密钥不进文件）。
+yml 唯一提供商；**无任何 LLM 配置 → 启动失败**。**LLM Provider 是声明式插件**：`--llm-*`
+与 `kind: opencode` 都要求 yml 声明 `- name: opencode-provider`（Provider 插件类型
+优先级最高，自动排到 `llm` 之前，条目顺序任意；
+`config.plan: go|zen` 选套餐、base_url 可覆盖，provider 条目无需再填 base_url）——cos 不再
+内置任何 Provider（含 mock，测试用本地回环服务器，见 `crates/cos-test-support`）；任意
+OpenAI 兼容端点可用 `custom-provider` 插件纯配置接入（`kind: custom`，无需写代码）；
+DeepSeek 官方 API 用 `deepseek-provider` 插件（`plugin: deepseek-provider`，内置
+`deepseek-v4-flash`/`deepseek-v4-pro` 目录，无分组）。
+opencode 提供商 `streaming` 缺省 false（该网关流式不稳定）；配置值支持 `${ENV_VAR}` 展开
+（如 `api_key: "${OPENCODE_API_KEY}"`，密钥不进文件）。
+
+主 agent 驱动（可替换设计）：`--agent-driver <id>`（或 `COS_AGENT_DRIVER`）从 `agent_factory!`
+注册表选择驱动器，缺省 `loop`（cos-agent-loop）；未知驱动 = 关键组件缺失 → 启动失败并列出可用驱动。
+自定义驱动 = 新 crate + `cos_agent::agent_factory!("<id>", build)` 注册 + 锚点（参考 `src/plugins.rs`）。
 
 三种形态共用同一装配（`assemble`：内置服务 + LLM 注册表 + 插件树 + 主 agent）与收尾
 （`finish`：不变量校验 + 会话末 digest + JSONL 落盘 + 优雅卸载）；每轮交互经
 `run_turn`（followup → 等 idle，可被 Ctrl-C 取消 → 总结该 turn 的回复与工具轨迹）。
+
+## 作为库嵌入（零插件）
+
+框架核心与插件解耦：`assemble` 传 `config_path: None` 即**零插件装配**——不读 yml、
+不装载任何插件，只提供内置服务（Context 事件总线 / 服务仓库 / 工具注册表 / LLM 注册表 /
+agent 注册表 / 会话日志）。你自己的项目里可以程序化注册服务与工具、实现自研
+`LlmAdapter`（或经 `LlmRegistry` 挂接 provider 插件），再创建 agent 跑 turn：
+
+```toml
+[dependencies]
+cos = { path = ".." }   # 或 git 依赖
+```
+
+```rust
+let config = cos::RunConfig { config_path: None, session_id: "my-app".into(), ..Default::default() };
+let app = cos::assemble(&config).await?;
+// 注册自定义工具 → 注册/实现 LlmAdapter → AgentRegistry::create → run_turn
+// 收尾：agent 为自行创建 → cos::finish_with(&app, &agent, &config)
+```
+
+完整可运行示例：`cargo run --example embed`（EchoAdapter + 自定义工具，零网络依赖）。
+各层经 `cos::core / session / llm / tools / agent / loader / memory / shell / invariants /
+rpc / contract` 模块别名暴露；现有插件（todo / bash / memory / llm / opencode / deepseek /
+custom-provider / rpc）即"如何写插件"的参考实现，需要时经 cordis.yml 声明装载。
+
+### feature 门控
+
+插件全部按 feature 门控（默认 `full` = 全插件，CLI 形态）。库嵌入可只取框架核心：
+
+```toml
+[dependencies]
+cos = { path = "..", default-features = false }   # 或 git 依赖
+# 需要时按需启用单个插件，如：
+# cos = { path = "..", default-features = false, features = ["plugin-memory"] }
+```
+
+注意：`--llm-*` 快捷方式依赖 `plugin-opencode` feature（`config_path: None` 的纯库用法
+不受影响——适配器由你自行实现/注册）。
 
 ## 状态
 
@@ -75,7 +127,7 @@ yml 唯一提供商 > 确定性演示脚本（回落时 REPL/RPC 会提示）。
   correct 取代/衰减与复活/诚实出口/重开持久化/工具），workspace 94 测试全绿
 - M2：接 agent 读/写路径 + 真实 LLM ✅ —— `agent/pre-step` 挂钩（每 turn 第一步消化上一 turn，
   记忆失败不阻塞对话）+ `agent/request` 挂钩（Mode A 主动 recall / Mode B 最近聊过 / 关系卡常驻
-  注入 system）；`crates/cos-llm-opencode`（OpenAI 兼容适配器：流式 SSE 优先、服务端失败自动非流式
+  注入 system）；`cos-llm` 的 `openai` feature（OpenAI 兼容适配器：流式 SSE 优先、服务端失败自动非流式
   兜底）；cos CLI `--llm-base-url/--llm-model/--llm-api-key`（或 `COS_LLM_*` 环境变量）启用真实
   LLM；`examples/memory.yml` 演示清单；mock 双脚本验收 + 本地回环 SSE 5 测试；实端点冒烟通过
   （不变量全过、逆序卸载）

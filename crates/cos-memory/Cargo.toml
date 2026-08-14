@@ -15,5 +15,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-cos-llm-mock = { path = "../cos-llm-mock" }
+cos-test-support = { path = "../cos-test-support" }
 tokio.workspace = true

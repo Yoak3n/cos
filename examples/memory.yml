@@ -1,6 +1,8 @@
-# cos 陪伴演示清单（M2）：todo + bash + memory。
+# cos 陪伴演示清单（M2）：opencode Provider 插件 + todo + bash + memory。
 # 记忆插件在 agent/pre-step 消化上一 turn、在 agent/request 注入主动 recall + 关系卡。
-# 真实 LLM 用 --llm-* 参数或 COS_LLM_* 环境变量启用；缺省为确定性 mock。
+# 真实 LLM 用 --llm-* 参数或 COS_LLM_* 环境变量启用（需本清单已声明 opencode-provider 插件）；
+# 记忆插件未解析到 LLM 时软降级（记忆禁用，会话照常）。
+- name: opencode-provider
 - name: todo
 - name: bash
 - name: memory

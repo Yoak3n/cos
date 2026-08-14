@@ -97,18 +97,13 @@ pub async fn serve_repl(
     assembled: &Assembled,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<(), AppError> {
+    let agent = assembled.agent()?;
     let tty = std::io::stdin().is_terminal();
     if tty {
         println!(
             "cos 交互模式 —— 输入消息与 agent 对话；/help 查看命令；\
              Ctrl-C 取消当前回复；/exit 退出"
         );
-        if assembled.demo_mode {
-            println!(
-                "注意：未配置真实 LLM（当前为确定性演示脚本）。\
-                 用 --llm-* 参数、或 yml plugin-llm（providers/chains）+ --agent-llm <id> 接入真实模型。"
-            );
-        }
     }
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     loop {
@@ -134,22 +129,22 @@ pub async fn serve_repl(
             match command {
                 "exit" | "quit" => break,
                 "help" => print_help(),
-                "session" => print_session(assembled),
+                "session" => print_session(agent.session()),
                 other => println!("未知命令 /{other}（/help 查看）"),
             }
             continue;
         }
         // 消费取消信号：turn 中被 Ctrl-C 中断 → 取消该轮并回到提示符
         // 流式显示：从当前日志末尾起增量读本轮事件（文本/工具调用实时打印）
-        let turn = last_turn(assembled.agent.session()) + 1;
-        let seen = assembled.agent.session().last_seq();
+        let turn = last_turn(agent.session()) + 1;
+        let seen = agent.session().last_seq();
         let stream_job = tokio::spawn(watch_turn(
-            assembled.agent.session().clone(),
+            agent.session().clone(),
             turn,
             seen,
             std::io::stdout(),
         ));
-        let summary = run_turn(&assembled.agent, UserMessage::new(text), cancel.as_ref()).await;
+        let summary = run_turn(agent, UserMessage::new(text), cancel.as_ref()).await;
         // watcher 看到本轮 turn/end 即收束；run_turn 返回时 turn/end 已落日志
         let streamed = stream_job.await.unwrap_or(false);
         if let Some(flag) = &cancel {
@@ -177,8 +172,7 @@ fn print_help() {
     );
 }
 
-fn print_session(assembled: &Assembled) {
-    let session = assembled.agent.session();
+fn print_session(session: &Session) {
     println!(
         "会话 {}：事件 {} 条，模型可见消息 {} 条",
         session.id(),

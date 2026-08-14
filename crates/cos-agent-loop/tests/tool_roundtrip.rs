@@ -11,9 +11,9 @@ use cos_llm::{
     ChunkDelta, ContentBlock, LlmAdapter, LlmRequest, LlmStream, Message, StreamChunk, ToolCall,
     UserMessage,
 };
-use cos_llm_mock::{MockAdapter, MockReply};
 use cos_session::{SessionEventData, TurnEndReason};
 use cos_system_prompt::PromptSections;
+use cos_test_support::{MockAdapter, MockReply};
 use cos_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
 

@@ -70,22 +70,26 @@ version = "0.1.0"
 dependencies = [
  "cos-agent",
  "cos-agent-loop",
+ "cos-contract",
  "cos-core",
  "cos-invariants",
  "cos-llm",
- "cos-llm-mock",
- "cos-llm-opencode",
  "cos-loader",
  "cos-memory",
  "cos-rpc",
  "cos-session",
  "cos-shell",
  "cos-system-prompt",
+ "cos-test-support",
  "cos-tools",
  "futures",
+ "inventory",
  "plugin-bash",
+ "plugin-custom-provider",
+ "plugin-deepseek",
  "plugin-llm",
  "plugin-memory",
+ "plugin-opencode",
  "plugin-rpc",
  "plugin-todo",
  "serde_json",
@@ -101,6 +105,8 @@ dependencies = [
  "cos-llm",
  "cos-session",
  "futures",
+ "inventory",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -112,11 +118,12 @@ dependencies = [
  "cos-agent",
  "cos-core",
  "cos-llm",
- "cos-llm-mock",
  "cos-session",
  "cos-system-prompt",
+ "cos-test-support",
  "cos-tools",
  "futures",
+ "inventory",
  "serde_json",
  "thiserror",
  "tokio",
@@ -142,6 +149,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -159,36 +167,14 @@ name = "cos-llm"
 version = "0.1.0"
 dependencies = [
  "cos-core",
- "cos-llm-mock",
- "futures",
- "inventory",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "cos-llm-mock"
-version = "0.1.0"
-dependencies = [
  "cos-llm",
- "futures",
- "inventory",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "cos-llm-opencode"
-version = "0.1.0"
-dependencies = [
- "cos-llm",
+ "cos-test-support",
  "futures",
  "inventory",
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
 ]
 
@@ -216,7 +202,7 @@ version = "0.1.0"
 dependencies = [
  "cos-core",
  "cos-llm",
- "cos-llm-mock",
+ "cos-test-support",
  "futures",
  "rusqlite",
  "serde",
@@ -233,8 +219,8 @@ dependencies = [
  "cos-agent-loop",
  "cos-core",
  "cos-llm",
- "cos-llm-mock",
  "cos-session",
+ "cos-test-support",
  "futures",
  "serde",
  "serde_json",
@@ -268,6 +254,16 @@ version = "0.1.0"
 dependencies = [
  "cos-core",
  "serde_json",
+]
+
+[[package]]
+name = "cos-test-support"
+version = "0.1.0"
+dependencies = [
+ "cos-llm",
+ "futures",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -896,13 +892,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-custom-provider"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-llm",
+ "cos-loader",
+ "cos-test-support",
+ "futures",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "plugin-deepseek"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-llm",
+ "cos-loader",
+ "cos-test-support",
+ "futures",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "plugin-llm"
 version = "0.1.0"
 dependencies = [
  "cos-core",
  "cos-llm",
- "cos-llm-mock",
  "cos-loader",
+ "cos-test-support",
  "futures",
  "inventory",
  "serde",
@@ -918,12 +944,27 @@ dependencies = [
  "cos-agent-loop",
  "cos-core",
  "cos-llm",
- "cos-llm-mock",
  "cos-loader",
  "cos-memory",
  "cos-session",
  "cos-system-prompt",
+ "cos-test-support",
  "cos-tools",
+ "futures",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "plugin-opencode"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-llm",
+ "cos-loader",
+ "cos-test-support",
  "futures",
  "inventory",
  "serde",
