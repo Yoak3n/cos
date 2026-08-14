@@ -56,6 +56,13 @@ impl Session {
         self.inner.lock().unwrap().events.clone()
     }
 
+    /// 仅返回 `seq > after` 的事件（增量读取；流式显示用，避免整表克隆）。
+    pub fn events_after(&self, after: u64) -> Vec<SessionEvent> {
+        let inner = self.inner.lock().unwrap();
+        let start = inner.events.partition_point(|event| event.seq <= after);
+        inner.events[start..].to_vec()
+    }
+
     /// 已分配的最大 seq。
     pub fn last_seq(&self) -> u64 {
         self.inner.lock().unwrap().next_seq.saturating_sub(1)

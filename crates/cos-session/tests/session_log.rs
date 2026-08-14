@@ -202,3 +202,18 @@ fn chunk_delta_roundtrips_through_json() {
     let back: cos_llm::StreamChunk = serde_json::from_value(value).unwrap();
     assert_eq!(back.delta, ChunkDelta::Text { text: "字".into() });
 }
+
+#[test]
+fn events_after_returns_only_newer_events() {
+    let session = sample_log(); // seq 1..=9
+    assert_eq!(session.events_after(0).len(), 9);
+    assert_eq!(session.events_after(9).len(), 0);
+    let tail = session.events_after(6);
+    assert_eq!(tail.len(), 3);
+    assert_eq!(tail[0].seq, 7);
+    assert_eq!(tail[2].seq, 9);
+    // 后续追加也可见（增量读取语义）
+    session.append_at(SessionEventData::TurnStart { turn: 2 }, 200);
+    assert_eq!(session.events_after(9).len(), 1);
+    assert_eq!(session.events_after(9)[0].seq, 10);
+}
