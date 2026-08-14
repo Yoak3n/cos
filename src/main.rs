@@ -4,6 +4,8 @@
 //! M2：`--llm-base-url/--llm-model/--llm-api-key`（或环境变量
 //! `COS_LLM_BASE_URL/COS_LLM_MODEL/COS_LLM_API_KEY`）启用真实 LLM；缺省为确定性 mock。
 //! `--llm-no-stream`（或 `COS_LLM_NO_STREAM=1`）关闭流式（opencode zen/go 流式只出推理文本，建议关）。
+//! LLM 统一管理：`--agent-llm <id>`（或 `COS_AGENT_LLM`）指定主 agent 的提供商/后备链 id
+//! （plugin-llm 装配的 yml 条目；未指定且无 --llm-* 时用 demo mock）。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,10 +19,11 @@ struct Args {
     prompt: String,
     session_path: Option<String>,
     llm: Option<LlmConfig>,
+    agent_llm: Option<String>,
 }
 
 const USAGE: &str = "用法: cos --config <cordis.yml> [--dump-config] [--session <id>] [--prompt <text>] [--no-save] \
-[--llm-base-url <url> --llm-model <model> --llm-api-key <key>] [--llm-no-stream]";
+[--llm-base-url <url> --llm-model <model> --llm-api-key <key>] [--llm-no-stream] [--agent-llm <id>]";
 
 fn env_or(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
@@ -35,6 +38,7 @@ fn parse_args() -> Result<Args, String> {
         prompt: "帮我记一条演示 todo".into(),
         session_path: Some("sessions/demo.jsonl".into()),
         llm: None,
+        agent_llm: env_or("COS_AGENT_LLM"),
     };
     let mut llm_base_url = env_or("COS_LLM_BASE_URL");
     let mut llm_model = env_or("COS_LLM_MODEL");
@@ -63,6 +67,9 @@ fn parse_args() -> Result<Args, String> {
                 llm_api_key = Some(args.next().ok_or("--llm-api-key 需要 key")?);
             }
             "--llm-no-stream" => no_stream = true,
+            "--agent-llm" => {
+                parsed.agent_llm = Some(args.next().ok_or("--agent-llm 需要 id")?);
+            }
             "--help" | "-h" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -114,6 +121,7 @@ async fn main() {
         session_path: args.session_path,
         cancel: Some(cancel),
         llm: args.llm,
+        agent_llm: args.agent_llm,
     })
     .await
     {

@@ -26,7 +26,5 @@ mod tools;
 pub use error::MemoryError;
 pub use pipeline::{ApplyOutcome, Resolution, TurnPair, turn_pair_from_text};
 pub use recall::{MemoryHit, ModeBFeed, RecallOutcome};
-pub use store::{
-    FactAction, FactKind, MemoryLlmProvider, MemoryStore, RelationCard, Tier, Topic, now_ms,
-};
+pub use store::{FactAction, FactKind, MemoryStore, RelationCard, Tier, Topic, now_ms};
 pub use tools::{demote_topic, inventory_topics, recall_memories, remember_fact};

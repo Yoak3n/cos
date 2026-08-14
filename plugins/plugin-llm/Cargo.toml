@@ -1,0 +1,19 @@
+[package]
+name = "plugin-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM 提供商统一管理插件：装配（providers）+ 后备链（chains）注册进 LlmRegistry"
+
+[dependencies]
+dsh-core = { path = "../../crates/dsh-core" }
+dsh-llm = { path = "../../crates/dsh-llm" }
+dsh-loader = { path = "../../crates/dsh-loader" }
+inventory.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+dsh-llm-mock = { path = "../../crates/dsh-llm-mock" }
+futures.workspace = true
+tokio.workspace = true

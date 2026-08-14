@@ -9,9 +9,9 @@ use std::sync::Arc;
 use dsh_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
 use dsh_agent_loop::LoopFactory;
 use dsh_core::{Context, Plugin};
-use dsh_llm::UserMessage;
+use dsh_llm::{LlmRegistry, UserMessage};
 use dsh_llm_mock::{MockAdapter, MockReply};
-use dsh_memory::{MemoryLlmProvider, MemoryStore};
+use dsh_memory::MemoryStore;
 use dsh_session::SessionEventData;
 use dsh_system_prompt::PromptSections;
 use dsh_tools::ToolRegistry;
@@ -38,24 +38,29 @@ async fn turn_absorbed_then_recalled_and_injected() {
         .unwrap()
         .set_factory(Arc::new(LoopFactory))
         .unwrap();
-    // 记忆专用 mock：turn 2 预步 apply_turn 消耗（提取 → 卡合并）
-    ctx.provide(MemoryLlmProvider {
-        inner: Arc::new(MockAdapter::new(
-            "memory-mock",
-            vec![
-                MockReply::text(
-                    r#"{"facts":[{"kind":"user","action":"new","topic_text":"咖啡偏好","statement":"用户喜欢手冲咖啡"}],"card_notes":{"profile":["用户喜欢手冲咖啡"],"agent_model":[],"relationship":[]}}"#,
-                ),
-                MockReply::text(r#"{"text":"用户喜欢手冲咖啡"}"#),
-            ],
-        )),
-    })
-    .unwrap();
+    // LLM 统一管理：注册 "default" = 记忆 mock（turn 2 预步 apply_turn 消耗：提取 → 卡合并）
+    ctx.provide(LlmRegistry::new(&ctx)).unwrap();
+    ctx.get::<LlmRegistry>()
+        .unwrap()
+        .register(
+            "default",
+            Arc::new(MockAdapter::new(
+                "memory-mock",
+                vec![
+                    MockReply::text(
+                        r#"{"facts":[{"kind":"user","action":"new","topic_text":"咖啡偏好","statement":"用户喜欢手冲咖啡"}],"card_notes":{"profile":["用户喜欢手冲咖啡"],"agent_model":[],"relationship":[]}}"#,
+                    ),
+                    MockReply::text(r#"{"text":"用户喜欢手冲咖啡"}"#),
+                ],
+            )),
+        )
+        .unwrap();
     MemoryPlugin
         .apply(
             &ctx,
             &MemoryConfig {
                 db_path: path.clone(),
+                llm: None,
                 max_context_chars: 6000,
                 keep_tail: 6,
                 digest_every: 8,

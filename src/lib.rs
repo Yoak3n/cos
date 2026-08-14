@@ -13,11 +13,11 @@ use dsh_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
 use dsh_agent_loop::LoopFactory;
 use dsh_core::{Context, Plugin};
 use dsh_invariants::{InvariantRegistry, register_defaults};
-use dsh_llm::{ChunkDelta, LlmAdapter, Message, StreamChunk, ToolCall, UserMessage};
+use dsh_llm::{ChunkDelta, LlmAdapter, LlmRegistry, Message, StreamChunk, ToolCall, UserMessage};
 use dsh_llm_mock::{MockAdapter, MockReply};
 use dsh_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use dsh_loader::{self as loader, Profile};
-use dsh_memory::{MemoryLlmProvider, MemoryStore};
+use dsh_memory::MemoryStore;
 use dsh_session::{
     AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, load_jsonl, save_jsonl,
 };
@@ -43,6 +43,8 @@ pub struct RunConfig {
     pub cancel: Option<Arc<AtomicBool>>,
     /// 真实 LLM 配置（None = 确定性 mock 演示链路）。
     pub llm: Option<LlmConfig>,
+    /// 主 agent 的 LLM 提供商/后备链 id（LLM 统一管理；None = 用 `llm` 的 "default" 或 demo mock）。
+    pub agent_llm: Option<String>,
 }
 
 /// 真实 LLM 配置（opencode-go 等 OpenAI 兼容端点）。
@@ -118,12 +120,13 @@ fn demo_script() -> Vec<MockReply> {
 
 /// 内置插件的插件 id —— 同时是对插件 crate 的显式引用锚点：
 /// 保证其 inventory 静态注册表被链接进 cos 可执行文件。
-pub fn builtin_plugin_ids() -> [&'static str; 4] {
+pub fn builtin_plugin_ids() -> [&'static str; 5] {
     [
         plugin_todo::TodoPlugin::ID,
         plugin_bash::BashPlugin::ID,
         plugin_demo::DemoPlugin::ID,
         plugin_memory::MemoryPlugin::ID,
+        plugin_llm::LlmPlugin::ID,
     ]
 }
 
@@ -138,17 +141,24 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     root.provide(InvariantRegistry::new(&root))?;
     provide_local_shell(&root)?;
     root.provide(AgentRegistry::new(&root))?;
-    // 记忆专用 LLM（M2）：真实端点（--llm-*）或空脚本 mock
-    let memory_llm: Arc<dyn LlmAdapter> = match &config.llm {
-        Some(cfg) => Arc::new(OpencodeAdapter::new(OpencodeConfig {
-            base_url: cfg.base_url.clone(),
-            api_key: cfg.api_key.clone(),
-            model: cfg.model.clone(),
-            streaming: cfg.streaming,
-        })),
-        None => Arc::new(MockAdapter::new("memory-mock", vec![])),
-    };
-    root.provide(MemoryLlmProvider { inner: memory_llm })?;
+    // LLM 统一管理：宿主装配空注册表；--llm-* 注册 "default"；plugin-llm 按 yml 填充
+    root.provide(LlmRegistry::new(&root))?;
+    if let Some(cfg) = &config.llm {
+        root.get::<LlmRegistry>().expect("刚装配").register(
+            "default",
+            Arc::new(OpencodeAdapter::new(OpencodeConfig {
+                base_url: cfg.base_url.clone(),
+                api_key: cfg.api_key.clone(),
+                model: cfg.model.clone(),
+                streaming: cfg.streaming,
+            })),
+        )?;
+    } else {
+        // 无 --llm-*：注册空脚本 mock（记忆插件默认消费方，失败软降级）
+        root.get::<LlmRegistry>()
+            .expect("刚装配")
+            .register("default", Arc::new(MockAdapter::new("memory-mock", vec![])))?;
+    }
     root.get::<PromptSections>()
         .expect("刚装配")
         .append("persona", "你是 dsh-rust 演示助手，工具结果要如实汇报。");
@@ -173,23 +183,28 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     // 装配插件树
     let app = loader::load(&root, &profile)?;
 
-    // demo agent：真实 LLM（--llm-*）或确定性 mock 脚本
-    let (adapter, provider, model) = match &config.llm {
-        Some(cfg) => (
-            Arc::new(OpencodeAdapter::new(OpencodeConfig {
-                base_url: cfg.base_url.clone(),
-                api_key: cfg.api_key.clone(),
-                model: cfg.model.clone(),
-                streaming: cfg.streaming,
-            })) as Arc<dyn LlmAdapter>,
+    // demo agent：LLM 统一管理解析（--agent-llm / --llm-* 的 "default"）或确定性 mock 脚本
+    let llm_registry = root.get::<LlmRegistry>().expect("刚装配");
+    let (adapter, provider, model) = if let Some(id) = &config.agent_llm {
+        let adapter = llm_registry
+            .resolve_id(id)
+            .map_err(|error| AppError::Other(format!("agent LLM '{id}' 不可用: {error}")))?;
+        (adapter, Some("llm-registry".to_string()), Some(id.clone()))
+    } else if config.llm.is_some() {
+        let adapter = llm_registry
+            .resolve_id("default")
+            .map_err(|error| AppError::Other(format!("agent LLM 'default' 不可用: {error}")))?;
+        (
+            adapter,
             Some("opencode".to_string()),
-            Some(cfg.model.clone()),
-        ),
-        None => (
+            config.llm.as_ref().map(|cfg| cfg.model.clone()),
+        )
+    } else {
+        (
             Arc::new(MockAdapter::new("demo", demo_script())) as Arc<dyn LlmAdapter>,
             Some("demo".to_string()),
             Some("mock".to_string()),
-        ),
+        )
     };
     let agent = root
         .get::<AgentRegistry>()

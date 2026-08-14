@@ -21,6 +21,7 @@ dsh-system-prompt = { path = "crates/dsh-system-prompt" }
 dsh-tools = { path = "crates/dsh-tools" }
 plugin-bash = { path = "plugins/plugin-bash" }
 plugin-demo = { path = "plugins/plugin-demo" }
+plugin-llm = { path = "plugins/plugin-llm" }
 plugin-memory = { path = "plugins/plugin-memory" }
 plugin-todo = { path = "plugins/plugin-todo" }
 futures.workspace = true

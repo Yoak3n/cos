@@ -3,12 +3,23 @@
 //! 语义：脚本 = 预设回复列表；每次 `stream()` 按**调用序号**取下一个预设回复
 //! 并流式产出其 chunks（同一脚本 → 同一输出，跨实例确定）。脚本耗尽后流产出 `Err`。
 //! （计划 §5 的"按输入哈希选择"为备选方案，A 形态用序号方案即可。）
+//!
+//! LLM 统一管理：本 crate 经 `llm_factory!("mock", build_mock)` 注册提供商工厂
+//! （空脚本 → 任何调用即失败，适合后备链测试与占位）。
 
 #![warn(missing_docs)]
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dsh_llm::{LlmAdapter, LlmError, LlmRequest, LlmStream, StreamChunk};
+
+/// 提供商工厂构建函数（`llm_factory!` 注册）：配置忽略 → 空脚本 mock（调用即失败）。
+pub fn build_mock(_config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError> {
+    Ok(Arc::new(MockAdapter::new("mock", vec![])))
+}
+
+dsh_llm::llm_factory!("mock", build_mock);
 
 /// 一次预设回复：按顺序流出的 chunk 序列。
 #[derive(Debug, Clone)]

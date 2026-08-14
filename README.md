@@ -69,3 +69,11 @@ cargo deny check   # CI 内执行（本地需 cargo-deny）
   压缩全链路测试；实端点冒烟：主 turn 通过 + digest 遇免费额度限流**失败软降级**（报错不崩、
   不变量全过）
 - M3+（后续）：promises 表接线、情绪趋势、晋升机制、多会话持久化（可继续按需推进）
+- LLM 统一管理 ✅ —— `dsh-llm::LlmRegistry`（服务 `"llm"`，同 ToolRegistry/AgentRegistry 构型：
+  工厂 inventory 收集 + 按 id 注册/取用 + 后备链）+ `plugins/plugin-llm`（yml 配置装配
+  providers/chains，示例 `examples/llm.yml`）+ `dsh_llm::llm_factory!` 工厂注册
+  （opencode/mock 已注册，新 provider = 新 crate + 工厂 + 注册，插件树零改动）；
+  `FallbackAdapter` 纯 futures 组合子：主 provider 未产出即失败（错误/空流）自动切下一个，
+  已产出后失败不切换（防内容重复）；记忆插件按 `llm:` 配置从注册表解析（缺省 "default"），
+  cos `--agent-llm <id>` 指定主 agent 提供商/链；测试 11 新增（切换/不切换/全败/注册表/
+  插件装配 fail loud）

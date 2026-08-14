@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use dsh_core::{Context, Plugin};
+use dsh_llm::LlmRegistry;
 use dsh_llm_mock::MockAdapter;
-use dsh_memory::{MemoryLlmProvider, MemoryStore};
+use dsh_memory::MemoryStore;
 use dsh_tools::{ToolRegistry, ToolRun};
 use plugin_memory::{MemoryConfig, MemoryPlugin};
 use serde_json::json;
@@ -21,10 +22,12 @@ fn temp_db() -> String {
 async fn apply_wires_memory_service_and_four_tools() {
     let path = temp_db();
     let ctx = Context::root();
-    ctx.provide(MemoryLlmProvider {
-        inner: Arc::new(MockAdapter::new("memory-mock", vec![])),
-    })
-    .unwrap();
+    // LLM 统一管理：宿主装配注册表 + 注册 "default"（空脚本 mock）
+    ctx.provide(LlmRegistry::new(&ctx)).unwrap();
+    ctx.get::<LlmRegistry>()
+        .unwrap()
+        .register("default", Arc::new(MockAdapter::new("memory-mock", vec![])))
+        .unwrap();
     ctx.provide(ToolRegistry::new(&ctx)).unwrap();
 
     MemoryPlugin
@@ -32,6 +35,7 @@ async fn apply_wires_memory_service_and_four_tools() {
             &ctx,
             &MemoryConfig {
                 db_path: path.clone(),
+                llm: None,
                 max_context_chars: 6000,
                 keep_tail: 6,
                 digest_every: 8,

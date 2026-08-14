@@ -12,6 +12,7 @@ fn demo_config() -> RunConfig {
         session_path: None,
         cancel: None,
         llm: None,
+        agent_llm: None,
     }
 }
 

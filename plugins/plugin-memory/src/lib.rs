@@ -16,10 +16,10 @@ use dsh_agent::{
     AgentStatus, AgentStatusPayload, PreStepDecision, PreStepPayload, current_initiator,
 };
 use dsh_core::{Context, CoreError, CoreResult, EffectHandle, Plugin, Validate};
-use dsh_llm::{LlmRequest, Message};
+use dsh_llm::{LlmRegistry, LlmRequest, Message};
 use dsh_memory::{
-    MemoryHit, MemoryLlmProvider, MemoryStore, demote_topic, inventory_topics, now_ms,
-    recall_memories, remember_fact, turn_pair_from_text,
+    MemoryHit, MemoryStore, demote_topic, inventory_topics, now_ms, recall_memories, remember_fact,
+    turn_pair_from_text,
 };
 use dsh_session::SessionEventData;
 use dsh_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
@@ -32,6 +32,9 @@ pub struct MemoryConfig {
     /// SQLite 数据库路径。
     #[serde(default = "default_db_path")]
     pub db_path: String,
+    /// LLM 提供商/后备链 id（LLM 统一管理；缺省用宿主注册的 "default"）。
+    #[serde(default)]
+    pub llm: Option<String>,
     /// 上下文压缩阈值（模型可见消息总字符数，M3）。
     #[serde(default = "default_max_context")]
     pub max_context_chars: usize,
@@ -623,6 +626,9 @@ async fn build_memory_section(store: &MemoryStore, query: Option<&str>) -> Optio
 }
 
 /// 插件主体（apply 时打开存储 + 注册四工具 + 挂 agent 读/写/digest 挂钩）。
+///
+/// LLM 解析（LLM 统一管理）：`config.llm`（provider/链 id）→ [`LlmRegistry`]；
+/// 缺省用 `"default"`（宿主装配；cos 无 `--llm-*` 时注册空脚本 mock）。
 #[derive(Default)]
 pub struct MemoryPlugin;
 
@@ -636,10 +642,14 @@ impl Plugin for MemoryPlugin {
     }
 
     fn apply(&self, ctx: &Context, config: &Self::Config) -> Result<(), CoreError> {
-        let llm = ctx
-            .get::<MemoryLlmProvider>()
-            .map_err(|_| CoreError::ServiceNotFound("memory-llm"))?;
-        let store = MemoryStore::open(&config.db_path, llm.inner.clone())
+        let registry = ctx
+            .get::<LlmRegistry>()
+            .map_err(|_| CoreError::ServiceNotFound("llm"))?;
+        let llm_id = config.llm.as_deref().unwrap_or("default");
+        let adapter = registry
+            .resolve_id(llm_id)
+            .map_err(|error| CoreError::Other(format!("LLM 提供商 '{llm_id}' 不可用: {error}")))?;
+        let store = MemoryStore::open(&config.db_path, adapter)
             .map_err(|error| CoreError::Other(error.to_string()))?;
         ctx.provide(store)?;
         let registry = ctx

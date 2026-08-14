@@ -120,3 +120,21 @@ dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   `crates/dsh-agent-loop/tests/error_path.rs` 钉死）。
 - **实端点限流观测**：免费模型 `deepseek-v4-flash-free` 有 FreeUsageLimitError（429），当日测试消耗
   较快；主 turn 与 digest 失败均**软降级**（流内 Err → 日志 → 继续），digest 失败不设 guard 下回重试。
+
+## LLM 统一管理（plugin-llm）
+
+- **构型**：`dsh-llm::LlmRegistry`（服务 `"llm"`）与 ToolRegistry/AgentRegistry 同构——宿主装配空
+  注册表，`plugins/plugin-llm` 按 yml 配置填充（providers 按 kind 实例化 + chains 后备链），
+  消费者按 id/链 id 解析。工厂经 `dsh_llm::llm_factory!("kind", build_fn)`（inventory 静态收集，
+  同 loader `plugin!` 模式，fn 指针 const 可构造）；新 provider = 新 Provider crate + 工厂注册，
+  插件树零改动。Provider crate 只依赖 Definition（dsh-llm），插件不得依赖 Provider（接缝纪律保持）。
+- **后备链语义（FallbackAdapter）**：纯 futures unfold 状态机（无 spawn、dsh-llm 不引 tokio）；
+  主 provider 在产出任何 chunk 前失败（错误/空流）→ 记错误并切下一个；**已产出后失败 → 原样传播
+  不切换**（避免内容重复）；全部未产出 → 交付最后错误。这正是 opencode 网关抖动/流式不稳定的通用解。
+- **loader 宿主服务边界**：loader 的 inject 校验只认插件 provide 表，宿主装配的服务不可见——
+  plugin-llm/plugin-memory 不声明 inject，靠 apply 时 `ctx.get` fail loud（同 plugin-todo）；
+  无依赖边时拓扑排序保持配置顺序，故 **llm 条目须在 memory 之前**（文档化）。
+- **记忆插件 LLM 解析**：`MemoryConfig.llm`（provider/链 id，缺省 "default"）→ 注册表解析；
+  原 `MemoryLlmProvider` 服务删除（回归测试改注册表装配）。cos 无 `--llm-*` 时注册
+  "default" = 空脚本 mock（记忆失败软降级不变）；`--agent-llm <id>` 指定主 agent 提供商/链，
+  `--llm-*` 仍注册 "default" 快捷方式。

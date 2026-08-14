@@ -138,16 +138,6 @@ pub struct RelationCard {
     pub updated_at: i64,
 }
 
-/// 记忆专用 LLM 服务包装（app 装配；测试注入 mock）。
-pub struct MemoryLlmProvider {
-    /// 适配器实例。
-    pub inner: Arc<dyn LlmAdapter>,
-}
-
-impl Service for MemoryLlmProvider {
-    const NAME: &'static str = "memory-llm";
-}
-
 impl Service for MemoryStore {
     const NAME: &'static str = "memory";
 }

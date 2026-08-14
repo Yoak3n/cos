@@ -8,16 +8,46 @@
 //! `data: {…}`，`choices[0].delta.content` 累积为文本块，usage 块映射 [`TokenUsage`]，
 //! `data: [DONE]` 收束）；若流式在**未产出任何 chunk 前**失败于服务端（HTTP 5xx /
 //! `{"type":"error",…}` 块），自动退化为非流式单次请求（`choices[0].message.content` +
-//! usage 合成一个 chunk）——兼容流式暂不可用的网关（实测 opencode zen 当前流式 500）。
-//! 4xx（鉴权/余额）不重试，原样报错。
+//! usage 合成一个 chunk）——兼容流式暂不可用的网关（实测 opencode zen/go 流式不稳定）。
+//! 4xx（鉴权/余额）不重试，原样报错。推理模型只流 `reasoning_content` 时兜底输出思考文本。
+//!
+//! LLM 统一管理：本 crate 经 `llm_factory!("opencode", build_opencode)` 注册提供商工厂。
 
 #![warn(missing_docs)]
+
+use std::sync::Arc;
 
 use dsh_llm::{
     ChunkDelta, LlmAdapter, LlmError, LlmRequest, LlmStream, Message, StreamChunk, TokenUsage,
 };
 use futures::StreamExt;
 use serde::Deserialize;
+
+/// 提供商工厂构建函数（`llm_factory!` 注册）：配置 `{base_url, api_key, model, streaming?}`。
+pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError> {
+    /// 提供商配置（插件 yml 里的 `config` 段）。
+    #[derive(Deserialize)]
+    struct ProviderConfig {
+        base_url: String,
+        api_key: String,
+        model: String,
+        #[serde(default = "default_streaming")]
+        streaming: bool,
+    }
+    fn default_streaming() -> bool {
+        true
+    }
+    let config: ProviderConfig = serde_json::from_value(config.clone())
+        .map_err(|error| LlmError::Failure(format!("opencode 提供商配置无效: {error}")))?;
+    Ok(Arc::new(OpencodeAdapter::new(OpencodeConfig {
+        base_url: config.base_url,
+        api_key: config.api_key,
+        model: config.model,
+        streaming: config.streaming,
+    })))
+}
+
+dsh_llm::llm_factory!("opencode", build_opencode);
 
 /// 适配器配置。
 #[derive(Debug, Clone)]

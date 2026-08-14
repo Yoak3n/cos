@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use dsh_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
 use dsh_agent_loop::LoopFactory;
 use dsh_core::{Context, Plugin};
-use dsh_llm::{LlmAdapter, LlmRequest, LlmStream, UserMessage};
+use dsh_llm::{LlmAdapter, LlmRegistry, LlmRequest, LlmStream, UserMessage};
 use dsh_llm_mock::{MockAdapter, MockReply};
-use dsh_memory::{MemoryLlmProvider, MemoryStore};
+use dsh_memory::MemoryStore;
 use dsh_session::SessionEventData;
 use dsh_system_prompt::PromptSections;
 use dsh_tools::ToolRegistry;
@@ -86,16 +86,21 @@ async fn long_session_compresses_tail_and_runs_digest() {
         MockReply::text(COMPRESS_SUMMARY),
         MockReply::text(EMPTY_DIGEST),
     ];
-    ctx.provide(MemoryLlmProvider {
-        inner: Arc::new(MockAdapter::new("memory-mock", memory_script)),
-    })
-    .unwrap();
+    ctx.provide(LlmRegistry::new(&ctx)).unwrap();
+    ctx.get::<LlmRegistry>()
+        .unwrap()
+        .register(
+            "default",
+            Arc::new(MockAdapter::new("memory-mock", memory_script)),
+        )
+        .unwrap();
     // 阈值 40：turn 5 累计 40 不超；turn 6（48）起压缩；keep_tail = 4；8 turn 触发 digest
     MemoryPlugin
         .apply(
             &ctx,
             &MemoryConfig {
                 db_path: path.clone(),
+                llm: None,
                 max_context_chars: 40,
                 keep_tail: 4,
                 digest_every: 8,

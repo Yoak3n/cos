@@ -84,6 +84,7 @@ dependencies = [
  "futures",
  "plugin-bash",
  "plugin-demo",
+ "plugin-llm",
  "plugin-memory",
  "plugin-todo",
  "serde_json",
@@ -157,10 +158,14 @@ dependencies = [
 name = "dsh-llm"
 version = "0.1.0"
 dependencies = [
+ "dsh-core",
+ "dsh-llm-mock",
  "futures",
+ "inventory",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -169,6 +174,8 @@ version = "0.1.0"
 dependencies = [
  "dsh-llm",
  "futures",
+ "inventory",
+ "serde_json",
  "tokio",
 ]
 
@@ -178,6 +185,7 @@ version = "0.1.0"
 dependencies = [
  "dsh-llm",
  "futures",
+ "inventory",
  "reqwest",
  "serde",
  "serde_json",
@@ -856,6 +864,21 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "plugin-llm"
+version = "0.1.0"
+dependencies = [
+ "dsh-core",
+ "dsh-llm",
+ "dsh-llm-mock",
+ "dsh-loader",
+ "futures",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

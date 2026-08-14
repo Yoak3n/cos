@@ -1,0 +1,36 @@
+# dsh-rust LLM 统一管理演示（plugin-llm）：多 provider + 后备链。
+# 用法：cos --config examples/llm.yml --agent-llm main --prompt "..."
+#   - 主 agent 走后备链 main（opencode-go 优先，未产出即失败自动切 zen-free）
+#   - 记忆插件 llm: main 共用同一条链
+# 注意：api_key 仅为演示占位，请替换为你的 key；切勿提交真实密钥。
+# 条目顺序重要：llm 必须在 memory 之前（注册表由宿主装配，拓扑排序无显式边）。
+- name: llm
+  config:
+    providers:
+      - id: opencode-go
+        kind: opencode
+        config:
+          base_url: "https://opencode.ai/zen/go/v1"
+          model: "deepseek-v4-flash"
+          api_key: "sk-REPLACE_ME"
+          streaming: false
+      - id: zen-free
+        kind: opencode
+        config:
+          base_url: "https://opencode.ai/zen/v1"
+          model: "deepseek-v4-flash-free"
+          api_key: "sk-REPLACE_ME"
+          streaming: false
+      - id: mock
+        kind: mock
+        config: {}
+    chains:
+      - id: main
+        providers: [opencode-go, zen-free]
+- name: todo
+- name: bash
+- name: demo
+- name: memory
+  config:
+    db_path: sessions/memory.db
+    llm: main
