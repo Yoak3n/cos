@@ -3,6 +3,7 @@
 //! Ctrl-C → 取消活动 turn → 优雅退出（全插件逆序卸载）。
 //! M2：`--llm-base-url/--llm-model/--llm-api-key`（或环境变量
 //! `COS_LLM_BASE_URL/COS_LLM_MODEL/COS_LLM_API_KEY`）启用真实 LLM；缺省为确定性 mock。
+//! `--llm-no-stream`（或 `COS_LLM_NO_STREAM=1`）关闭流式（opencode zen/go 流式只出推理文本，建议关）。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +20,7 @@ struct Args {
 }
 
 const USAGE: &str = "用法: cos --config <cordis.yml> [--dump-config] [--session <id>] [--prompt <text>] [--no-save] \
-[--llm-base-url <url> --llm-model <model> --llm-api-key <key>]";
+[--llm-base-url <url> --llm-model <model> --llm-api-key <key>] [--llm-no-stream]";
 
 fn env_or(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
@@ -38,6 +39,7 @@ fn parse_args() -> Result<Args, String> {
     let mut llm_base_url = env_or("COS_LLM_BASE_URL");
     let mut llm_model = env_or("COS_LLM_MODEL");
     let mut llm_api_key = env_or("COS_LLM_API_KEY");
+    let mut no_stream = env_or("COS_LLM_NO_STREAM").is_some();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -60,6 +62,7 @@ fn parse_args() -> Result<Args, String> {
             "--llm-api-key" => {
                 llm_api_key = Some(args.next().ok_or("--llm-api-key 需要 key")?);
             }
+            "--llm-no-stream" => no_stream = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -73,6 +76,7 @@ fn parse_args() -> Result<Args, String> {
                 base_url,
                 api_key,
                 model,
+                streaming: !no_stream,
             });
         }
         (None, None, None) => {}

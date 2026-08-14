@@ -54,6 +54,8 @@ pub struct LlmConfig {
     pub api_key: String,
     /// 模型 id。
     pub model: String,
+    /// 是否流式（false = 非流式单次；opencode zen/go 流式只出推理文本，建议 false）。
+    pub streaming: bool,
 }
 
 /// 运行报告（测试与 CLI 打印消费）。
@@ -142,6 +144,7 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
             base_url: cfg.base_url.clone(),
             api_key: cfg.api_key.clone(),
             model: cfg.model.clone(),
+            streaming: cfg.streaming,
         })),
         None => Arc::new(MockAdapter::new("memory-mock", vec![])),
     };
@@ -177,6 +180,7 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
                 base_url: cfg.base_url.clone(),
                 api_key: cfg.api_key.clone(),
                 model: cfg.model.clone(),
+                streaming: cfg.streaming,
             })) as Arc<dyn LlmAdapter>,
             Some("opencode".to_string()),
             Some(cfg.model.clone()),

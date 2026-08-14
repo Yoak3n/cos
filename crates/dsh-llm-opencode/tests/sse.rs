@@ -13,6 +13,7 @@ fn adapter(port: u16) -> OpencodeAdapter {
         base_url: format!("http://127.0.0.1:{port}/v1"),
         api_key: "test-key".into(),
         model: "deepseek-v4-flash-free".into(),
+        streaming: true,
     })
 }
 
@@ -82,6 +83,94 @@ async fn streams_text_and_maps_usage() {
             output_tokens: 2
         }
     );
+}
+
+#[tokio::test]
+async fn reasoning_only_stream_falls_back_to_thought_text() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+             data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"中\"}}]}\n\n\
+             data: [DONE]\n\n",
+        ],
+    ));
+
+    let adapter = adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        let chunk = item.unwrap();
+        if let ChunkDelta::Text { text: delta } = chunk.delta {
+            text.push_str(&delta);
+        }
+    }
+    server.await.unwrap();
+    assert_eq!(
+        text, "思考中",
+        "全程无 content 时回退推理文本（宁可说出思考，不可空回复）"
+    );
+}
+
+#[tokio::test]
+async fn content_drops_buffered_reasoning() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+             data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先想想\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\"回答\"}}]}\n\n\
+             data: [DONE]\n\n",
+        ],
+    ));
+
+    let adapter = adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        let chunk = item.unwrap();
+        if let ChunkDelta::Text { text: delta } = chunk.delta {
+            text.push_str(&delta);
+        }
+    }
+    server.await.unwrap();
+    assert_eq!(text, "回答", "content 一出现即丢弃推理缓冲（回答优先）");
+}
+
+#[tokio::test]
+async fn bare_json_error_without_data_prefix_is_detected() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            // 200 + 裸 JSON error（无 data: 前缀）→ 触发非流式兜底
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+             {\"type\":\"error\",\"error\":{\"type\":\"error\",\"message\":\"Internal server error\"}}",
+            // 兜底：非流式整段内容
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+             {\"id\":\"c3\",\"object\":\"chat.completion\",\"model\":\"deepseek-v4-flash-free\",\
+             \"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"裸错误兜底成功\"}}],\
+             \"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}",
+        ],
+    ));
+
+    let adapter = adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        let chunk = item.unwrap();
+        if let ChunkDelta::Text { text: delta } = chunk.delta {
+            text.push_str(&delta);
+        }
+    }
+    server.await.unwrap();
+    assert_eq!(text, "裸错误兜底成功");
 }
 
 #[tokio::test]

@@ -90,7 +90,12 @@ dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 ## 阶段 2（桌面陪伴 agent）—— M2 决策
 
 - **真实 LLM 适配器（dsh-llm-opencode）**：OpenAI 兼容 `chat/completions`；`LlmAdapter::stream` 是同步方法 → 内部 `tokio::spawn` + unbounded channel 转发（调用方须在 runtime 内，同 mock 语义）。**流式优先、自动非流式兜底**：SSE 在未产出任何 chunk 前遇服务端失败（HTTP 5xx / `{"type":"error"}` 块）→ 重发 `stream:false` 单次请求，`choices[0].message.content`（空则 `reasoning_content`）+ usage 合成一个 chunk；4xx（鉴权/余额）不重试原样报错；已产出部分 chunk 后失败不再兜底（避免重复内容）。错误一律作为流内 `Err` 交付，不进 stderr。
-- **opencode zen 端点实测**：官方文档端点 = `https://opencode.ai/zen/v1/chat/completions`（deepseek/kimi/glm/minimax 等）；`/zen/go/v1`（models.dev 的 OpenCode Go 面）实测对 chat 恒 500，不可用。账号 key 下 `deepseek-v4-flash` 余额不足（401 CreditsError），免费模型 `deepseek-v4-flash-free` 可用；该网关当前 `stream:true` 也 500 → 靠非流式兜底保证可用。cos 经 `--llm-*`（或 `COS_LLM_*` 环境变量）注入，三参数必须齐备；缺省仍为确定性 mock。
+- **opencode 端点（用户确认 + 实测）**：**订阅网关 base URL = `https://opencode.ai/zen/go/v1`**（OpenCode Go，
+  订阅制，OpenAI 兼容；models.dev、bifrost、GoModel 三方实现一致：Bearer + `/v1/chat/completions`，支持 SSE）。
+  实测（当日）：`/zen/go/v1/models` 正常；`/zen/go/v1/chat/completions` 对该 key **服务端恒 500**
+  （全部模型/鉴权头/请求形状变体均试），需查订阅状态或稍后重试；`/zen/v1`（Zen 按量网关）非流式可用、
+  `deepseek-v4-flash` 余额不足（401 CreditsError）、**测试期用 `deepseek-v4-flash-free`**；两边网关
+  `stream:true` 当日均 500 → 靠非流式兜底保证可用。base URL 为纯配置（`--llm-base-url`），代码零改动可切换。
 - **agent 读/写挂钩（plugin-memory）**：写 = `agent/pre-step` waterfall（step 1、turn > 1 时消化上一 turn）：`current_initiator()` 取会话 → 按 `TurnStart` 跟踪 turn 号重建 user/assistant 文本（UserMessage 事件无 turn 字段）→ `apply_turn` **内联 await**（正确性优先：下一请求前记忆已就绪；M3 digest 再优化时延）。记忆失败只落 stderr、不阻塞对话。读 = `agent/request` waterfall（`next()` 委托后改 `system`）：查询 = 请求里最后一条用户消息；Mode A 命中 →【相关记忆】段，否则 Mode B `recent_feed(3)` →【最近聊过】段；关系卡（profile/agent_model/relationship）有内容时常驻注入【关系卡】段；原 system 保留在注入段之后。注入发生在 `request/header` 日志之前 → 模型可见 ⟺ 已记录不变量继续成立。两个监听器随插件 fiber 卸载自动失效。
 - **MemoryStore::open 建父目录**：`sessions/memory.db` 等路径父目录不存在时 `create_dir_all`（新增 `MemoryError::Io`）；`/sessions` 运行时产物入 .gitignore。
 - **M2 验收**：本地回环 TCP 打桩 5 测试（流式增量 + usage、4xx 不重试、5xx 兜底、error 块兜底、兜底双败报错）+ agent 双 mock 全链路测试（turn 消化 → recall/关系卡注入 system）+ 实端点冒烟（75 事件、不变量全过、逆序卸载）。

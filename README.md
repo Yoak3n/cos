@@ -52,9 +52,14 @@ cargo deny check   # CI 内执行（本地需 cargo-deny）
   记忆失败不阻塞对话）+ `agent/request` 挂钩（Mode A 主动 recall / Mode B 最近聊过 / 关系卡常驻
   注入 system）；`crates/dsh-llm-opencode`（OpenAI 兼容适配器：流式 SSE 优先、服务端失败自动非流式
   兜底）；cos CLI `--llm-base-url/--llm-model/--llm-api-key`（或 `COS_LLM_*` 环境变量）启用真实
-  LLM（openecode zen：`https://opencode.ai/zen/v1`，免费模型 `deepseek-v4-flash-free` 实测可用）；
-  `examples/memory.yml` 演示清单；mock 双脚本验收 + 本地回环 SSE 5 测试；实端点冒烟通过（75 事件、
-  不变量全过、逆序卸载）
+  LLM；`examples/memory.yml` 演示清单；mock 双脚本验收 + 本地回环 SSE 5 测试；实端点冒烟通过
+  （不变量全过、逆序卸载）
+- M2 端点实测（opencode）：**用户订阅端点 base URL = `https://opencode.ai/zen/go/v1`**（OpenCode Go
+  订阅制网关，OpenAI 兼容；请求格式与 bifrost/GoModel 两个独立实现一致）。实测现象：`/zen/go/v1`
+  的 `models` 正常，`chat/completions` 当前对该 key **服务端恒 500**（所有模型/鉴权头/请求形状均试
+  过，属服务端问题，需查订阅状态或稍后重试）；`/zen/v1`（Zen 按量网关）非流式可用，`deepseek-v4-flash`
+  付费模型余额不足（401），**测试期用 `deepseek-v4-flash-free`**；两边网关当前 `stream:true` 均 500
+  → 适配器的非流式自动兜底保证可用。base URL 是纯配置项，代码无需改动即可切换
 - M3：上下文自动压缩 + digest 慢路径 + 自我认知 ✅ —— `agent/request` 超阈值（`max_context_chars`）
   时旧消息压进**滚动摘要**（`session_state` KV 持久化，`keep_tail` 尾部窗口保原文；压缩失败宁可长
   不可丢），摘要注入 system（进 request/header 日志，不变量不受影响）；digest 慢路径 = 统计

@@ -22,12 +22,16 @@ use serde::Deserialize;
 /// 适配器配置。
 #[derive(Debug, Clone)]
 pub struct OpencodeConfig {
-    /// base URL（不带 `/chat/completions` 后缀，如 `https://opencode.ai/zen/v1`）。
+    /// base URL（不带 `/chat/completions` 后缀，如 `https://opencode.ai/zen/go/v1`）。
     pub base_url: String,
     /// API key。
     pub api_key: String,
     /// 模型 id。
     pub model: String,
+    /// 是否用流式（`stream:true`）；false = 直接非流式单次请求。
+    /// 某些网关（opencode zen/go）流式只出 `reasoning_content` 且时有 500，
+    /// 非流式反而给出完整 `content` —— 此时关掉流式更稳。
+    pub streaming: bool,
 }
 
 /// OpenAI 兼容适配器（流式优先、非流式自动兜底）。
@@ -58,6 +62,9 @@ struct SseChoice {
 struct SseDelta {
     #[serde(default)]
     content: Option<String>,
+    /// 推理模型（deepseek 等）把思考文本放这里；content 缺失时兜底。
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 /// 非流式响应（OpenAI chat.completion）。
@@ -177,6 +184,25 @@ impl LlmAdapter for OpencodeAdapter {
     }
 
     fn stream(&self, request: &LlmRequest) -> LlmStream {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let client = self.client.clone();
+        if !self.config.streaming {
+            // 非流式模式：直接单次请求
+            let single_req = match self.build_request(request, false) {
+                Ok(req) => req,
+                Err(error) => {
+                    return Box::pin(futures::stream::once(async move { Err(error) }));
+                }
+            };
+            tokio::spawn(async move {
+                if let Err(message) = single_shot(&client, single_req, &tx).await {
+                    let _ = tx.send(Err(LlmError::Failure(message)));
+                }
+            });
+            return Box::pin(futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|item| (item, rx))
+            }));
+        }
         let streaming_req = match self.build_request(request, true) {
             Ok(req) => req,
             Err(error) => {
@@ -189,8 +215,6 @@ impl LlmAdapter for OpencodeAdapter {
                 return Box::pin(futures::stream::once(async move { Err(error) }));
             }
         };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let client = self.client.clone();
         tokio::spawn(async move {
             // 错误不进 stderr：一律作为流内 Err 交付给消费方
             if let Err(error) = run_request(client, streaming_req, single_req, tx.clone()).await {
@@ -255,44 +279,73 @@ async fn stream_once(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
-    while let Some(item) = stream.next().await {
-        let bytes = item.map_err(|error| StepError::Fatal(format!("流读取失败: {error}")))?;
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
-        // SSE 按行：一次可能到达多行，逐行消费
-        while let Some(pos) = buffer.find('\n') {
+    let mut finished = false;
+    let mut eof = false;
+    // 推理文本缓冲：content 一出现即丢弃；仅当全程无 content 才在流尾回退输出
+    let mut reasoning_buf = String::new();
+    let mut saw_content = false;
+    while !finished {
+        if let Some(pos) = buffer.find('\n') {
+            // 逐行消费 SSE；error 体可能不带 `data:` 前缀（裸 JSON）
             let line: String = buffer[..pos].trim_end_matches('\r').to_string();
             buffer.drain(..=pos);
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if data.is_empty() {
-                    continue;
+            let data = match line.strip_prefix("data:") {
+                Some(data) => data.trim(),
+                None => line.trim(),
+            };
+            if data.is_empty() {
+                continue;
+            }
+            if data == "[DONE]" {
+                finished = true;
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data)
+                && value.get("type").and_then(|t| t.as_str()) == Some("error")
+            {
+                return Err(StepError::Retryable(format!(
+                    "服务端错误: {}",
+                    truncate(data, 300)
+                )));
+            }
+            let chunk: SseChunk = match serde_json::from_str(data) {
+                Ok(chunk) => chunk,
+                Err(_) => continue, // keepalive/注释行忽略
+            };
+            let mut text = String::new();
+            let mut reasoning = String::new();
+            for choice in &chunk.choices {
+                if let Some(content) = &choice.delta.content {
+                    text.push_str(content);
                 }
-                if data == "[DONE]" {
-                    return Ok(());
+                if let Some(thought) = &choice.delta.reasoning_content {
+                    reasoning.push_str(thought);
                 }
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data)
-                    && value.get("type").and_then(|t| t.as_str()) == Some("error")
+            }
+            let usage = chunk.usage.map(|usage| TokenUsage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+            });
+            *sent += 1;
+            if text.is_empty() {
+                // 纯推理增量：缓冲；usage 独立成块（消费方跳过空文本）
+                reasoning_buf.push_str(&reasoning);
+                if usage.is_some()
+                    && tx
+                        .send(Ok(StreamChunk {
+                            delta: ChunkDelta::Text {
+                                text: String::new(),
+                            },
+                            usage,
+                        }))
+                        .is_err()
                 {
-                    return Err(StepError::Retryable(format!(
-                        "服务端错误: {}",
-                        truncate(data, 300)
-                    )));
+                    return Ok(()); // 接收方已丢弃（提前取消）
                 }
-                let chunk: SseChunk = match serde_json::from_str(data) {
-                    Ok(chunk) => chunk,
-                    Err(_) => continue, // keepalive/注释行忽略
-                };
-                let mut text = String::new();
-                for choice in &chunk.choices {
-                    if let Some(content) = &choice.delta.content {
-                        text.push_str(content);
-                    }
-                }
-                let usage = chunk.usage.map(|usage| TokenUsage {
-                    input_tokens: usage.prompt_tokens,
-                    output_tokens: usage.completion_tokens,
-                });
-                *sent += 1;
+            } else {
+                // content 出现：丢弃已缓冲的推理（回答优先），按 content 流出
+                saw_content = true;
+                reasoning_buf.clear();
                 if tx
                     .send(Ok(StreamChunk {
                         delta: ChunkDelta::Text { text },
@@ -303,7 +356,34 @@ async fn stream_once(
                     return Ok(()); // 接收方已丢弃（提前取消）
                 }
             }
+        } else if eof {
+            // EOF：残留无换行尾行（裸 JSON error 体等）补一个换行再处理一次
+            if !buffer.is_empty() {
+                buffer.push('\n');
+                continue;
+            }
+            break;
+        } else {
+            match stream.next().await {
+                Some(Ok(bytes)) => {
+                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+                }
+                Some(Err(error)) => {
+                    return Err(StepError::Fatal(format!("流读取失败: {error}")));
+                }
+                None => eof = true,
+            }
         }
+    }
+    // 流尾：全程无 content → 回退输出缓冲的推理（宁可说出思考，不可空回复）
+    if !saw_content && !reasoning_buf.is_empty() {
+        *sent += 1;
+        let _ = tx.send(Ok(StreamChunk {
+            delta: ChunkDelta::Text {
+                text: std::mem::take(&mut reasoning_buf),
+            },
+            usage: None,
+        }));
     }
     Ok(())
 }
@@ -329,10 +409,21 @@ async fn single_shot(
     let mut text = String::new();
     let mut usage = None;
     for choice in &completion.choices {
-        if let Some(content) = &choice.message.content {
-            text.push_str(content);
-        } else if let Some(reasoning) = &choice.message.reasoning_content {
-            text.push_str(reasoning);
+        // content 优先（空串视同缺失）；推理模型可能把文本放在 reasoning_content
+        let content = choice
+            .message
+            .content
+            .as_deref()
+            .filter(|c| !c.trim().is_empty());
+        let reasoning = choice
+            .message
+            .reasoning_content
+            .as_deref()
+            .filter(|c| !c.trim().is_empty());
+        match (content, reasoning) {
+            (Some(content), _) => text.push_str(content),
+            (None, Some(reasoning)) => text.push_str(reasoning),
+            (None, None) => {}
         }
     }
     if let Some(u) = completion.usage {
