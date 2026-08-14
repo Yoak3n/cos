@@ -60,7 +60,6 @@ pub mod schema;
 pub use schema::result::AppError;
 pub use schema::{RunConfig, RunReport};
 
-
 /// 装配结果（REPL / RPC / 一次性 / 库嵌入共用）。
 pub struct Assembled {
     /// 根上下文（服务/事件总线）。
@@ -191,7 +190,7 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
             let _ = cfg;
             return Err(AppError::Other(
                 "关键组件缺失：--llm-* 快捷方式需要 opencode Provider 插件，但本构建未启用 \
-                 feature \"plugin-opencode\"（default-features = false 时需显式启用）。\
+                 feature \"plugin-opencode-provider\"（default-features = false 时需显式启用）。\
                  请启用该 feature，或改用 cordis.yml 声明 - name: opencode-provider。"
                     .into(),
             ));

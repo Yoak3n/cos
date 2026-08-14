@@ -1,6 +1,5 @@
 //! 运行结果。
 
-
 use thiserror::Error;
 
 pub use cos_loader as loader;

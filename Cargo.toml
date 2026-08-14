@@ -36,6 +36,12 @@ tokio.workspace = true
 [dev-dependencies]
 cos-test-support = { path = "crates/cos-test-support", version = "0.1.0" }
 
+# 二进制入口在 src/bin/main.rs；显式命名 `cos`（否则 target 名 = main，
+# CARGO_BIN_EXE_cos / cargo install cos 都会失效）
+[[bin]]
+name = "cos"
+path = "src/bin/main.rs"
+
 [features]
 # 默认 = 全插件（CLI 形态）。库嵌入可 `default-features = false` 只取框架核心，
 # 再按需启用单个插件 feature（如 features = ["plugin-memory"]）。

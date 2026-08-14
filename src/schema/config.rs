@@ -1,14 +1,10 @@
 //! 运行配置。
 //!
 
-
-
 use std::sync::{Arc, atomic::AtomicBool};
 
 use cos_llm::Message;
 use cos_session::SessionEvent;
-
-
 
 /// 库嵌入模式：`RunConfig { session_id: "my-app".into(), ..Default::default() }`
 /// （`config_path: None` = 零插件装配）。
