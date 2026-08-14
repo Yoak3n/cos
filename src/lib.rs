@@ -106,6 +106,15 @@ pub enum AppError {
     Other(String),
 }
 
+impl From<cos_rpc::RpcError> for AppError {
+    fn from(error: cos_rpc::RpcError) -> Self {
+        match error {
+            cos_rpc::RpcError::Io(error) => AppError::Io(error),
+            cos_rpc::RpcError::Other(message) => AppError::Other(message),
+        }
+    }
+}
+
 /// demo 脚本：第一步工具调用 todo_write，第二步文本回复（确定性）。
 fn demo_script() -> Vec<MockReply> {
     vec![
@@ -127,12 +136,13 @@ fn demo_script() -> Vec<MockReply> {
 
 /// 内置插件的插件 id —— 同时是对插件 crate 的显式引用锚点：
 /// 保证其 inventory 静态注册表被链接进 cos 可执行文件。
-pub fn builtin_plugin_ids() -> [&'static str; 4] {
+pub fn builtin_plugin_ids() -> [&'static str; 5] {
     [
         plugin_todo::TodoPlugin::ID,
         plugin_bash::BashPlugin::ID,
         plugin_memory::MemoryPlugin::ID,
         plugin_llm::LlmPlugin::ID,
+        plugin_rpc::RpcPlugin::ID,
     ]
 }
 
@@ -176,6 +186,8 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
     root.provide(AgentRegistry::new(&root))?;
     // LLM 统一管理：宿主装配空注册表；--llm-* 注册 "default"；plugin-llm 按 yml 填充
     root.provide(LlmRegistry::new(&root))?;
+    // RPC 提供者注册表：plugin-rpc 的 apply 注册默认实现；未装配时 --rpc 回退内置
+    root.provide(cos_rpc::RpcProviderRegistry::new())?;
     if let Some(cfg) = &config.llm {
         root.get::<LlmRegistry>().expect("刚装配").register(
             "default",

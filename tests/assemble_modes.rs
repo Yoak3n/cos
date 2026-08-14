@@ -107,3 +107,36 @@ async fn multiple_providers_without_chain_fall_back_to_demo() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// demo.yml 装配了 plugin-rpc → RPC 提供者注册（--rpc 走插件路径）。
+#[tokio::test]
+async fn rpc_plugin_registers_provider_when_declared() {
+    let config = base_config(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/demo.yml").to_string());
+    let assembled = assemble(&config).await.unwrap();
+    let registry = assembled
+        .root
+        .get::<cos_rpc::RpcProviderRegistry>()
+        .unwrap();
+    assert!(
+        registry.get().is_some(),
+        "demo.yml 声明 rpc 插件 → 提供者应已注册（--rpc 委托插件）"
+    );
+}
+
+/// yml 未声明 plugin-rpc → 提供者缺失（--rpc 回退内置 stdio，零配置可用）。
+#[tokio::test]
+async fn rpc_provider_absent_without_plugin() {
+    let path = std::env::temp_dir().join(format!("cos-assemble-norpc-{}.yml", std::process::id()));
+    std::fs::write(&path, "- name: todo\n").unwrap();
+    let config = base_config(path.to_string_lossy().into_owned());
+    let assembled = assemble(&config).await.unwrap();
+    let registry = assembled
+        .root
+        .get::<cos_rpc::RpcProviderRegistry>()
+        .unwrap();
+    assert!(
+        registry.get().is_none(),
+        "未声明 rpc 插件 → 无提供者（宿主回退内置）"
+    );
+    let _ = std::fs::remove_file(&path);
+}

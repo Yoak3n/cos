@@ -77,6 +77,7 @@ dependencies = [
  "cos-llm-opencode",
  "cos-loader",
  "cos-memory",
+ "cos-rpc",
  "cos-session",
  "cos-shell",
  "cos-system-prompt",
@@ -85,6 +86,7 @@ dependencies = [
  "plugin-bash",
  "plugin-llm",
  "plugin-memory",
+ "plugin-rpc",
  "plugin-todo",
  "serde_json",
  "thiserror",
@@ -203,6 +205,23 @@ dependencies = [
  "cos-llm-mock",
  "futures",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-rpc"
+version = "0.1.0"
+dependencies = [
+ "cos-agent",
+ "cos-agent-loop",
+ "cos-core",
+ "cos-llm",
+ "cos-llm-mock",
+ "cos-session",
+ "futures",
  "serde",
  "serde_json",
  "thiserror",
@@ -884,6 +903,20 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "plugin-rpc"
+version = "0.1.0"
+dependencies = [
+ "cos-agent",
+ "cos-core",
+ "cos-loader",
+ "cos-rpc",
+ "futures",
+ "inventory",
+ "serde",
  "tokio",
 ]
 

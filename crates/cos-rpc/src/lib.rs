@@ -1,4 +1,4 @@
-//! stdio RPC 服务（`cos --rpc`）——协议向 pi 的 RPC 模式对齐（pi `docs/rpc.md`）。
+//! cos-rpc —— RPC 协议引擎（协议对齐 pi 的 RPC 模式，见根 `docs/rpc.md`）。
 //!
 //! 帧格式：严格 JSONL（LF 分隔；输入接受尾部 `\r`）。
 //! 命令：`{"id"?, "type": "<command>", ...}` → 响应 `{"id"?, "type": "response",
@@ -14,31 +14,94 @@
 //!
 //! 排队消息 id：`prompt`/`steer`/`follow_up` 的命令 `id` 即排队消息 id（响应
 //! `data.messageId` 原样回显；缺省自动生成 `m-<n>`），可用 `cancel_message` 取消。
+//!
+//! 宿主委托：本 crate 定义 [`RpcProvider`] 契约与 [`RpcProviderRegistry`] 服务——
+//! RPC 作为插件提供（plugin-rpc），宿主 `--rpc` 查注册表：有插件 → 委托；
+//! 无插件 → [`serve_stdio`] 内置回退。
+
+#![warn(missing_docs)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use cos_agent::AgentStatus;
+use cos_agent::{Agent, AgentStatus};
+use cos_core::Service;
 use cos_llm::{ChunkDelta, ContentBlock, Message, TokenUsage, ToolCall, UserMessage};
 use cos_session::{SessionEvent, SessionEventData, TurnEndReason};
+use futures::future::BoxFuture;
 use serde_json::{Value, json};
+use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use crate::{AppError, Assembled, wait_for_cancel};
-
 mod command;
 use command::Command;
+
+/// RPC 引擎边界错误。
+#[derive(Debug, Error)]
+pub enum RpcError {
+    /// I/O 失败（stdin/stdout）。
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+    /// 其他失败。
+    #[error("{0}")]
+    Other(String),
+}
+
+/// RPC 服务提供者（宿主 `--rpc` 委托给注册的插件；对象安全）。
+pub trait RpcProvider: Send + Sync {
+    /// 在给定 agent 上运行 RPC 服务（stdin/stdout）；返回即服务结束。
+    fn serve(
+        &self,
+        agent: &Arc<dyn Agent>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> BoxFuture<'static, Result<(), RpcError>>;
+}
+
+/// RPC 提供者注册表（宿主装配时提供；plugin-rpc 的 apply 注册默认实现）。
+#[derive(Default)]
+pub struct RpcProviderRegistry {
+    provider: std::sync::RwLock<Option<Arc<dyn RpcProvider>>>,
+}
+
+impl Service for RpcProviderRegistry {
+    const NAME: &'static str = "rpc-providers";
+}
+
+impl RpcProviderRegistry {
+    /// 空注册表。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 注册提供者（重复注册报错）。
+    pub fn register(&self, provider: Arc<dyn RpcProvider>) -> Result<(), RpcError> {
+        let mut slot = self
+            .provider
+            .write()
+            .map_err(|_| RpcError::Other("注册表锁损坏".into()))?;
+        if slot.is_some() {
+            return Err(RpcError::Other("RPC 提供者已注册".into()));
+        }
+        *slot = Some(provider);
+        Ok(())
+    }
+
+    /// 已注册的提供者（None = 未注册，宿主回退内置）。
+    pub fn get(&self) -> Option<Arc<dyn RpcProvider>> {
+        self.provider.read().ok().and_then(|slot| slot.clone())
+    }
+}
 
 /// 服务循环：读命令行 → 分发 → 写响应行；事件转发器并发流式输出。
 /// EOF 或 `exit` 命令返回；Ctrl-C（cancel 信号）直接返回。
 pub async fn serve_rpc<R, W>(
     reader: R,
     writer: W,
-    assembled: &Assembled,
+    agent: &Arc<dyn Agent>,
     cancel: Option<Arc<AtomicBool>>,
-) -> Result<(), AppError>
+) -> Result<(), RpcError>
 where
     R: tokio::io::AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -47,11 +110,11 @@ where
 
     // 事件转发器：会话日志增量 → pi 事件流（只发新事件；客户端关闭即停）
     let forwarder_writer = writer.clone();
-    let session = assembled.agent.session().clone();
+    let session = agent.session().clone();
     let mut seen = session.last_seq();
     let mut forwarder = EventForwarder::new(
-        assembled.agent.options().provider.clone(),
-        assembled.agent.options().model.clone(),
+        agent.options().provider.clone(),
+        agent.options().model.clone(),
     );
     tokio::spawn(async move {
         loop {
@@ -126,11 +189,35 @@ where
             .await?;
             continue;
         };
-        let response = dispatch(command, &request, assembled, &next_id);
+        let response = dispatch(command, &request, agent, &next_id);
         write_line(&writer, &response).await?;
         if command == Command::Exit {
             return Ok(());
         }
+    }
+}
+
+/// stdio 便捷入口（内置回退与 plugin-rpc 的默认实现共用）。
+pub async fn serve_stdio(
+    agent: &Arc<dyn Agent>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<(), RpcError> {
+    serve_rpc(
+        tokio::io::BufReader::new(tokio::io::stdin()),
+        tokio::io::stdout(),
+        agent,
+        cancel,
+    )
+    .await
+}
+
+/// 轮询取消信号（宿主 main 的 Ctrl-C 监视任务写入）。
+async fn wait_for_cancel(flag: Arc<AtomicBool>) {
+    loop {
+        if flag.load(Ordering::Acquire) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -164,14 +251,13 @@ fn response(
 fn dispatch(
     command: Command,
     request: &Value,
-    assembled: &Assembled,
+    agent: &Arc<dyn Agent>,
     next_id: &AtomicU64,
 ) -> Value {
     let id = request.get("id").cloned();
     let respond = |success: bool, data: Option<Value>, error: Option<String>| {
         response(command.name(), id.clone(), success, data, error)
     };
-    let agent = &assembled.agent;
     match command {
         Command::Prompt => {
             let message = request
@@ -802,7 +888,7 @@ fn event(value: Value) -> String {
 async fn write_line<W: AsyncWrite + Unpin>(
     writer: &Mutex<W>,
     value: &Value,
-) -> Result<(), AppError> {
+) -> Result<(), RpcError> {
     let mut writer = writer.lock().await;
     writer
         .write_all(serde_json::to_string(value).unwrap().as_bytes())
@@ -814,37 +900,54 @@ async fn write_line<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
 
-    use cos_llm::{AssistantMessage, ChunkDelta, ContentBlock, StreamChunk, TokenUsage};
+    use cos_agent::{Agent, AgentOptions, AgentRegistry, CreateAgentOptions};
+    use cos_agent_loop::LoopFactory;
+    use cos_core::Context;
+    use cos_llm::{
+        AssistantMessage, ChunkDelta, ContentBlock, LlmAdapter, StreamChunk, TokenUsage,
+    };
+    use cos_llm_mock::{MockAdapter, MockReply};
     use cos_session::{Session, SessionEventData, TurnEndReason};
     use serde_json::{Value, json};
 
     use super::{Command, EventForwarder, dispatch};
-    use crate::{RunConfig, assemble};
 
-    fn base_config() -> RunConfig {
-        RunConfig {
-            config_path: concat!(env!("CARGO_MANIFEST_DIR"), "/examples/demo.yml").into(),
-            dump_config: false,
-            session_id: "rpc-lib".into(),
-            prompt: None,
-            session_path: None,
-            cancel: None,
-            llm: None,
-            agent_llm: None,
-        }
+    /// 本地装配一个 mock agent（无宿主依赖；三态确定性测试用）。
+    async fn mock_agent() -> Arc<dyn Agent> {
+        let root = Context::root();
+        let registry = AgentRegistry::new(&root);
+        root.provide(registry.clone()).unwrap();
+        registry.set_factory(Arc::new(LoopFactory)).unwrap();
+        let adapter: Arc<dyn LlmAdapter> = Arc::new(MockAdapter::new(
+            "mock",
+            vec![MockReply::text("第一轮"), MockReply::text("第二轮")],
+        ));
+        registry
+            .create(CreateAgentOptions {
+                session_id: "rpc-lib".into(),
+                options: AgentOptions {
+                    provider: Some("mock".into()),
+                    model: Some("mock-1".into()),
+                    max_tokens: None,
+                },
+                adapter,
+            })
+            .await
+            .unwrap()
     }
 
     /// 重复 id 排队 → fail loud；不同 id 正常排队并可取消。
     /// 确定性：连续同步 dispatch，驱动器未调度，消息都还在队列中。
     #[tokio::test]
     async fn rpc_rejects_duplicate_queued_message_id() {
-        let assembled = assemble(&base_config()).await.unwrap();
+        let agent = mock_agent().await;
         let next_id = AtomicU64::new(0);
         let cmd = |value: Value| {
             let command = Command::parse(&value).expect("测试命令应可解析");
-            dispatch(command, &value, &assembled, &next_id)
+            dispatch(command, &value, &agent, &next_id)
         };
 
         // 第一条（idle → 立即处理，但驱动器未调度，仍在队列）
@@ -880,9 +983,8 @@ mod tests {
         assert_eq!(r4["success"], true);
         assert_eq!(r4["data"]["cancelled"], true);
 
-        assembled.agent.when_idle().await;
-        let texts: Vec<String> = assembled
-            .agent
+        agent.when_idle().await;
+        let texts: Vec<String> = agent
             .session()
             .events()
             .iter()

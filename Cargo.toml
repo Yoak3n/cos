@@ -15,6 +15,7 @@ cos-llm-mock = { path = "crates/cos-llm-mock" }
 cos-llm-opencode = { path = "crates/cos-llm-opencode" }
 cos-loader = { path = "crates/cos-loader" }
 cos-memory = { path = "crates/cos-memory" }
+cos-rpc = { path = "crates/cos-rpc" }
 cos-session = { path = "crates/cos-session" }
 cos-shell = { path = "crates/cos-shell" }
 cos-system-prompt = { path = "crates/cos-system-prompt" }
@@ -22,6 +23,7 @@ cos-tools = { path = "crates/cos-tools" }
 plugin-bash = { path = "plugins/plugin-bash" }
 plugin-llm = { path = "plugins/plugin-llm" }
 plugin-memory = { path = "plugins/plugin-memory" }
+plugin-rpc = { path = "plugins/plugin-rpc" }
 plugin-todo = { path = "plugins/plugin-todo" }
 futures.workspace = true
 serde_json.workspace = true

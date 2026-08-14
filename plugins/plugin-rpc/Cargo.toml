@@ -1,0 +1,19 @@
+[package]
+name = "plugin-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RPC 模式插件：向宿主注册 pi 协议 RPC 提供者（协议引擎在 cos-rpc）"
+
+[dependencies]
+cos-agent = { path = "../../crates/cos-agent" }
+cos-core = { path = "../../crates/cos-core" }
+cos-loader = { path = "../../crates/cos-loader" }
+cos-rpc = { path = "../../crates/cos-rpc" }
+futures.workspace = true
+inventory.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+cos-core = { path = "../../crates/cos-core" }

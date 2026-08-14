@@ -4,11 +4,20 @@
 协议形态与 [pi 的 RPC 模式](https://github.com/gaianet/pi/blob/main/packages/coding-agent/docs/rpc.md) 对齐
 （命令/响应/事件信封、流式事件、`id` 关联），实现为 cos 当前能力的子集。
 
+## 架构
+
+RPC 是**插件**：协议引擎在 `crates/cos-rpc`（命令分发 + 事件投影 + 服务循环），
+`plugins/plugin-rpc` 向宿主注册默认提供者。yml 声明 `- name: rpc` 后，宿主 `--rpc`
+委托插件提供者；未声明时回退内置（同一引擎，零配置可用）。其他插件可注册
+不同的 `RpcProvider` 实现（如 JSON-RPC）。
+
 ## 启动
 
 ```bash
 cos --config cordis.yml --rpc [--session <id>] [--no-save]
 ```
+
+`cordis.yml` 含 `- name: rpc`（demo.yml 已含）。
 
 ## 协议概览
 

@@ -12,7 +12,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cos::rpc::serve_rpc;
 use cos::{LlmConfig, RunConfig, assemble, finish, run};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -202,14 +201,7 @@ async fn main() {
                     "注意：未配置真实 LLM（当前为确定性演示脚本）。用 --llm-* 或 yml plugin-llm + --agent-llm 接入真实模型。"
                 );
             }
-            if let Err(error) = serve_rpc(
-                tokio::io::BufReader::new(tokio::io::stdin()),
-                tokio::io::stdout(),
-                &assembled,
-                Some(cancel),
-            )
-            .await
-            {
+            if let Err(error) = cos::rpc::serve(&assembled, Some(cancel)).await {
                 eprintln!("RPC 失败: {error}");
                 std::process::exit(1);
             }
