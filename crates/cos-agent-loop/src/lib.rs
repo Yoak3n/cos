@@ -621,6 +621,10 @@ impl Agent for LoopAgent {
         self.send(message, InboxTarget::NextStep, false);
     }
 
+    fn pending_count(&self) -> usize {
+        self.core.inbox.next_turn_len() + self.core.inbox.next_step_len()
+    }
+
     fn cancel(&self, cause: AbortCause, keep_inbox: bool) {
         if !keep_inbox {
             self.core.inbox.clear();

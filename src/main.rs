@@ -1,11 +1,11 @@
 //! cos CLI 入口：
 //! - `cos --config <cordis.yml>` 无 `--prompt` → 交互式 REPL（一键启动）；
-//! - `cos --config <cordis.yml> --rpc` → stdio JSON-RPC 服务（供外部程序调用）；
+//! - `cos --config <cordis.yml> --rpc` → stdio RPC 服务（协议对齐 pi `docs/rpc.md`，供外部程序调用）；
 //! - `cos --config <cordis.yml> --prompt <text>` → 一次性运行（演示/脚本）；
 //! - `--dump-config` 只输出装载计划。
 //!
 //! Ctrl-C：一次性 = 取消活动 turn 后优雅退出；REPL = 回复中取消当前 turn、提示符处退出；
-//! RPC = 取消当前 chat（若在跑），空闲时退出。退出统一走 `finish`（不变量/digest/落盘/卸载）。
+//! RPC = 取消当前 prompt（若在跑），空闲时退出。退出统一走 `finish`（不变量/digest/落盘/卸载）。
 //! LLM：`--llm-base-url/--llm-model/--llm-api-key`（或 `COS_LLM_*` 环境变量）启用真实 LLM，
 //! `--llm-no-stream` 关流式；`--agent-llm <id>`（或 `COS_AGENT_LLM`）指定主 agent 提供商/后备链。
 
@@ -36,7 +36,7 @@ struct Args {
 const USAGE: &str = "用法: cos --config <cordis.yml> [--session <id>] [--no-save] [--repl | --rpc | --prompt <text>] \
 [--dump-config]\n  \
 [--llm-base-url <url> --llm-model <model> --llm-api-key <key>] [--llm-no-stream] [--agent-llm <id>]\n  \
-缺省（无 --prompt/--rpc）为交互式 REPL；--prompt 为一次性；--rpc 为 stdio JSON-RPC 服务";
+缺省（无 --prompt/--rpc）为交互式 REPL；--prompt 为一次性；--rpc 为 stdio RPC 服务（pi 协议）";
 
 fn env_or(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())

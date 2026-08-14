@@ -195,6 +195,11 @@ pub trait AgentTrait: Send + Sync {
     /// 排队模型可见上下文、不唤醒（dsh `inject`）。
     fn inject(&self, message: UserMessage);
 
+    /// 待处理消息数（next-turn + next-step 队列；RPC `get_state` 用，缺省 0）。
+    fn pending_count(&self) -> usize {
+        0
+    }
+
     /// 取消：清除排队（除非 keep_inbox）并中止活动 turn。
     fn cancel(&self, cause: cos_session::AbortCause, keep_inbox: bool);
 
