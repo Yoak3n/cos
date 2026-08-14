@@ -71,7 +71,7 @@ dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 - **cos 宿主（P6）**：根 package `cos` 即 CLI（`--config`/`--dump-config`/`--session`/`--prompt`/`--no-save`）；内置服务（tools/system-prompt/invariants/shell/agents）在装载前装配；`loader::plan()` 供 `--dump-config` 与装载共用同一路径（输出与装载一致）；优雅退出 = `LoadedApp::dispose_async`（apply 逆序，顺序可审计）；Ctrl-C 经取消信号 → 活动 turn 以 aborted 收束 → 卸载。插件 crate 需被显式引用（`builtin_plugin_ids` 锚点），否则 MSVC 链接器丢弃 object、inventory 收集不到注册表。
 - **P6 简化的 shell**：`cmd /C` 前台执行、无后台 job、无 sandbox（PLAN.md 明示 v1 范围）；`ShellProvider(Arc<dyn Shell>)` 包装服务，插件消费接缝不绑 LocalShell。
 - **根 crate = cos**：计划 §2 的 `app/` 由根 package `cos` 承担（用户拍板"根就叫 cos"）；CLI 可执行即 cos 二进制（P6 落地）。
-- **依赖 vendored（环境约束）**：本环境无法访问 crates.io（SSL 受限），依赖经 `cargo vendor --offline` 落入仓库内 `vendor/`，由 `.cargo/config.toml` 的 source replacement 生效；新增/升级依赖时，用临时 `CARGO_HOME`（拷入 cache/index）重跑 `cargo vendor --offline vendor`。tokio 1.52 默认 features 为空，需显式声明 `["macros", "rt-multi-thread", "time", "sync"]`。
+- **依赖 vendored 方案（已取消）**：早期本环境无法访问 crates.io（SSL 受限），依赖曾经 `cargo vendor --offline` 落入仓库内 `vendor/`、由 `.cargo/config.toml` 的 source replacement 生效；网络恢复后用户拍板取消——已删除 `vendor/` 与 `.cargo/config.toml`，恢复标准 crates.io 解析（Cargo.lock 不变，构建实测通过）。tokio 1.52 默认 features 为空，需显式声明 `["macros", "rt-multi-thread", "time", "sync"]`。
 - **edition 2024 / resolver 3**：仓库原为 `cargo new` 默认（edition 2024），沿用。
 - **rust-toolchain**：pin stable（rustfmt + clippy 组件），CI 与本地一致。
 
