@@ -1,0 +1,7 @@
+# 依赖源替换：本仓库使用 vendored 依赖（本环境无法访问 crates.io，见 docs/decisions.md）。
+# 新增/升级依赖时：cargo vendor --offline vendor 更新 vendor/（需临时 CARGO_HOME，见 decisions.md）。
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

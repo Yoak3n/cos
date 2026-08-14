@@ -1,0 +1,21 @@
+[package]
+name = "plugin-todo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "todo_write 工具（P5，session 态清单）"
+
+[dependencies]
+dsh-agent = { path = "../../crates/dsh-agent" }
+dsh-core = { path = "../../crates/dsh-core" }
+dsh-loader = { path = "../../crates/dsh-loader" }
+dsh-session = { path = "../../crates/dsh-session" }
+dsh-tools = { path = "../../crates/dsh-tools" }
+futures.workspace = true
+inventory.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+dsh-llm = { path = "../../crates/dsh-llm" }
+tokio.workspace = true

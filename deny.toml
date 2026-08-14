@@ -1,0 +1,26 @@
+# cargo-deny 配置（CI: cargo deny check）
+# 参考：https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+yanked = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-DFS-2016",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+]
+
+[licenses.private]
+ignore = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

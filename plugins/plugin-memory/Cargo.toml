@@ -1,0 +1,22 @@
+[package]
+name = "plugin-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "记忆插件接线：服务提供 + 四工具（remember/recall/inventory/demote，M1）"
+
+[dependencies]
+dsh-core = { path = "../../crates/dsh-core" }
+dsh-loader = { path = "../../crates/dsh-loader" }
+dsh-memory = { path = "../../crates/dsh-memory" }
+dsh-session = { path = "../../crates/dsh-session" }
+dsh-tools = { path = "../../crates/dsh-tools" }
+futures.workspace = true
+inventory.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+dsh-llm = { path = "../../crates/dsh-llm" }
+dsh-llm-mock = { path = "../../crates/dsh-llm-mock" }
+tokio.workspace = true

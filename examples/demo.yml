@@ -1,0 +1,5 @@
+# dsh-rust 演示清单：todo 工具 + bash + echo 演示工具。
+# 内置服务（tools/system-prompt/invariants/shell/agents）由 cos 在装载前装配。
+- name: todo
+- name: bash
+- name: demo

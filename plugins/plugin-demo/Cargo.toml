@@ -1,0 +1,16 @@
+[package]
+name = "plugin-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "echo 类演示工具（供 e2e，P6）"
+
+[dependencies]
+dsh-core = { path = "../../crates/dsh-core" }
+dsh-loader = { path = "../../crates/dsh-loader" }
+dsh-session = { path = "../../crates/dsh-session" }
+dsh-tools = { path = "../../crates/dsh-tools" }
+futures.workspace = true
+inventory.workspace = true
+serde.workspace = true
+serde_json.workspace = true

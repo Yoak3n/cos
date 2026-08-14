@@ -1,0 +1,88 @@
+# 设计决策记录
+
+> 与 PLAN.md §4 对应。D1–D7 已在计划中拍板，此处记录理由与实现落点；
+> P0 补充决策（计划未覆盖到签名以下的实现细节）见文末。
+> 语义权威参考（JS 仓库）：`E:\GitVault\deepseek-harness`。
+
+## D1 事件类型化 —— 运行时开放（选 a）
+
+`EventName = &'static str` + `EventPayload = Arc<dyn Any + Send + Sync>`，监听器内 downcast。
+
+- 理由：编译期枚举（linkme 收集变体）穷尽性收益小、跨 crate 收集机制复杂；运行时开放与 B 形态 FFI（字符串事件名 + 二进制载荷）天然兼容。
+- 风险应对：waterfall 按 事件名 + 载荷 `TypeId` 配对（`ListenerBody::Waterfall { ty, .. }`）；downcast 失败 dev 模式 panic / release 记日志跳过（P1 硬化）。
+- 落点：`crates/dsh-core/src/events.rs`。
+
+## D2 异步运行时 —— tokio
+
+stream 与工具并发需要；async-trait 处理 trait 对象。
+
+- P0 暂不在 dsh-core 引入 tokio（库本身只含类型与 futures 组合子）；测试与驱动器侧（P1 起）接入。
+- 落点：`[workspace.dependencies] tokio`；dsh-core 仅 dev-dependencies。
+
+## D3 配置校验 —— serde + schemars
+
+serde 反序列化 + `Validate` trait 手写校验；schemars 生成 JSON Schema（P2 接入 loader 校验；B 形态直接作 wire 契约）。
+
+- P0 落点：`Plugin::Config: DeserializeOwned + Validate`（`Validate` 默认 `Ok`）。
+
+## D4 会话事件 —— 封闭 + Custom 逃生舱
+
+`SessionEvent` 封闭枚举 + `Custom { name, data }`；`derive_messages` 对 Custom 原样透传。（P3 实现）
+
+## D5 错误类型 —— 边界具体枚举
+
+dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现可自由使用 anyhow。
+
+## D6 scope —— A 形态就做
+
+子 agent / subagent 是主干的一部分。P0 定型 `ScopeKey` / `ScopeTarget` 类型；事件按 scope 路由与父链向上流在 P1 实现（语义权威：`packages/core/scope/src/index.ts`）。
+
+## D7 效果卸载 —— 同步反注册 + 可 await 句柄
+
+- `EffectHandle::dispose` 幂等同步反注册；
+- `Fiber::Drop` 逆序执行（RAII 兜底）+ `Fiber::dispose_async()` 供 loader 优雅卸载时等待异步 disposer（`push_async`）。
+
+## P0 补充决策（实现落点，计划未覆盖）
+
+- **Service::NAME**：类型化 TypeMap 需要 名字 → 类型 的桥。`Service` trait 带 `const NAME`，与 `Plugin::provide()` 声明的名字一致；`Context::provide` 据此做同名冲突检测（`DuplicateService`），`get` 用 `TypeId`。
+- **监听器按分发模式注册**：`ctx.on*` 注册时声明 `DispatchKind`（同 cordis `ctx.on(name, l, { type })`），`ctx.emit/serial/bail/parallel/waterfall` 只分发对应模式的监听器。五种语义照 `vendor/cordis/src/events.ts`：
+  - `emit`：同步逐个调用，返回值忽略；
+  - `parallel`：全并发 await，任一失败 → 聚合错误（`ListenerAggregate`，同 `AggregateError`）；
+  - `serial`：异步按序 await，监听器返回 `Ok(Some(v))`（bail 值）即停止并返回 `v`；
+  - `bail`：同步按序，第一个非 `None` 返回；
+  - `waterfall`：监听器包裹剩余链，不调 `next()` 即 veto，链尾为调用方提供的默认行为。
+- **waterfall 签名**（按计划风险表应对）：`Fn(&mut Decision<T>) -> BoxFuture<ControlFlow<T>>`；`Break(v)` 短路、`Continue(())` 且未调 `next()` 静默短路（沿用当前值）、默认行为作为链尾写入决策值。P1 单测钉死。
+- **监听器随 fiber 失效**：`ctx.on*` 内部即 `fiber.push(remove-handle)`（同 dsh `fiber.effect`），fiber 卸载后监听器自动移除；返回的 `EffectHandle` 亦可提前 dispose（幂等）。
+- **EffectHandle 语义**：dispose 幂等、**显式触发**——丢弃句柄克隆是无操作（同 dsh 返回的 disposer 函数：调用才生效）；自动逆序回滚只由 `Fiber::Drop` / `dispose_async` 承担。fiber 持有每个注册效果的句柄克隆，插件也可保留克隆以便提前反注册。
+- **scope 路由语义（P1 落地，照 `packages/core/scope/src/index.ts`）**：监听器注册时记录其上下文的 scope tag；`ScopeTarget::Key(k)` 分发时无 tag 监听器全收、tag 位于 `k` 祖先链（含 `k`）的监听器收——事件只向上流（祖先监听子孙，子孙不监听祖先）；`ScopeTarget::None` 对应 dsh 无 key 的 unkeyed carrier（排除一切带 tag 监听器）；父链绑定每 key 一次、拒绝成环（`bindScopeParent` 语义，无 rebind——A 形态不做运行时重组）。`fork_scoped(key)` = `createScope` 的 scoped ctx；`fork()` 继承 tag。
+- **注册纪律（P1）**：`ctx.on*` / `ctx.provide` 返回 `CoreResult<EffectHandle>`；fiber 已卸载后注册 → `CoreError::InactiveFiber`（同 dsh `INACTIVE_EFFECT`，fail loud）。
+- **loader 静态注册表（P2）**：`plugin!("name", MyPlugin)` 宏 + inventory 收集。`PluginRegistrar` 全部字段为函数指针（const 可构造，`inventory::submit!` 直接收集，无运行时初始化）；`P: Default`，实例装载期构造。`Plugin::inject/provide` 因此改为返回 `&'static [&'static str]`（P0 签名细化）。
+- **cordis.yml 形态（P2）**：`Profile = Vec<Entry>`（cordis.patch.yml 顶层数组语义，v1 无层叠）；条目 `{id?, name, config?, inject?, disabled?}`，config 原位解析为 `serde_json::Value`（§6：B 形态 wire 格式）；错误风格照 JS `failed to apply loader entry <id> (<name>): detail`。装载失败靠 RAII 自动回滚（已 apply 的 fork Context 随栈展开 drop → fiber 逆序反注册）。
+- **会话 wire 形状（P3）**：`SessionEvent` 信封 `{seq, time, type, data}`（flatten 的 tag/content 枚举）；事件名含 `/` 分隔符（`turn/start` 等）——serde 的 `rename_all` 只能做词法转换、会损毁 `/`，故逐变体显式 `rename`；版本钉 0、不兼容日志直接拒绝（同 dsh 无迁移语义）。serde 带 tag 枚举**不支持 newtype 变体**，`ContentBlock`/`ChunkDelta` 用 struct 变体（`Text { text }`）。
+- **derive_messages 投影（P3）**：surface = user/message、assistant/message、tool/result 按 seq 序；`Custom` 原样透传为 `Message::Custom`（决策 D4）；chunk/边界/请求头/工具调用为 log-only，不参与投影。
+- **LlmAdapter 接缝（P3）**：对象安全（同步方法 + boxed `LlmStream`）；usage 随末块携带（`StreamChunk.usage`），agent-loop（P4）装配进 assistant/message。
+- **waterfall 载荷/返回值分离（P4，修订 P1 定型）**：`Decision<P, V>` —— 载荷 `P` 经 `set_value` 变换、链返回值 `V`；veto = 不调 `next()` 直接返回 `V`（ControlFlow 退役）。P1 的单类型 `Decision<T>` 无法表达 dsh 的真实用法（pre-step 载荷是消息、链返回决策）；P1 测试同步迁移。监听器按 `(TypeId::of::<P>, TypeId::of::<V>)` 类型对配对。
+- **Inbox claim 语义（P4，照 dsh inbox.ts）**：总是先取光 next-step，`NextTurn` 目标再额外取 next-turn 队列的**恰好一条**——每个排队 turn 消费一条，同 turn 内可再消费 steering/注入。
+- **Session 内部可变性（P4）**：`Session` 改为 `Arc<Mutex<Inner>>`（廉价 Clone）：Agent 句柄对外共享 `&Session` 只读视图，loop 以 `&self` 追加（写路径单写者）。
+- **驱动器相位与因果链（P4，照 agent.ts/AgentRegistry）**：`Phase { Idle, Running{turn,step,aborted}, Maintenance{wake_requested} }`；wake 闩在维护收敛后重放；`Running` 状态事件在调用方任务发出（同 dsh），`Idle` 在驱动器任务内（with_initiator 边界内，发起者可见）。`run_maintenance` 用类型擦除的 `Maintenance`（FnOnce + AbortSignal），对象安全。
+- **工具管线（P5，照 tool-execution-pipeline.md）**：`tool/call` 先写日志（loop）→ `tools/pre-execute`(waterfall, Allow/Deny) → 单调守卫 → `tools/execute`(waterfall，链尾=工具体) → `tools/post-execute`(waterfall) → `tool/result` 写日志 + `tools/result` 实时通知。P5 简化：顺序执行（无并发池/屏障）、无 approval 服务（pre-execute veto 代替）、无 additionalContexts；参数解析照 dsh（空串→`{}`，非法 JSON→原串文本）。
+- **工具结果回流（P5，照 agent.ts）**：run_step 返回 `Option<TurnEndReason>`——`None` = 已执行工具、turn 继续；下一 step 以**空消息**进入（无新 user/message），derive_messages 含 Tool 结果回流模型。
+- **todo_write（P5）**：整表替换、最后写入胜出；会话态经 `current_initiator()` 因果链写 `todo/write`（log-only 事件，新增入封闭枚举）。
+- **cos 宿主（P6）**：根 package `cos` 即 CLI（`--config`/`--dump-config`/`--session`/`--prompt`/`--no-save`）；内置服务（tools/system-prompt/invariants/shell/agents）在装载前装配；`loader::plan()` 供 `--dump-config` 与装载共用同一路径（输出与装载一致）；优雅退出 = `LoadedApp::dispose_async`（apply 逆序，顺序可审计）；Ctrl-C 经取消信号 → 活动 turn 以 aborted 收束 → 卸载。插件 crate 需被显式引用（`builtin_plugin_ids` 锚点），否则 MSVC 链接器丢弃 object、inventory 收集不到注册表。
+- **P6 简化的 shell**：`cmd /C` 前台执行、无后台 job、无 sandbox（PLAN.md 明示 v1 范围）；`ShellProvider(Arc<dyn Shell>)` 包装服务，插件消费接缝不绑 LocalShell。
+- **根 crate = cos**：计划 §2 的 `app/` 由根 package `cos` 承担（用户拍板"根就叫 cos"）；CLI 可执行即 cos 二进制（P6 落地）。
+- **依赖 vendored（环境约束）**：本环境无法访问 crates.io（SSL 受限），依赖经 `cargo vendor --offline` 落入仓库内 `vendor/`，由 `.cargo/config.toml` 的 source replacement 生效；新增/升级依赖时，用临时 `CARGO_HOME`（拷入 cache/index）重跑 `cargo vendor --offline vendor`。tokio 1.52 默认 features 为空，需显式声明 `["macros", "rt-multi-thread", "time", "sync"]`。
+- **edition 2024 / resolver 3**：仓库原为 `cargo new` 默认（edition 2024），沿用。
+- **rust-toolchain**：pin stable（rustfmt + clippy 组件），CI 与本地一致。
+
+## 阶段 2（桌面陪伴 agent）—— M1 记忆插件决策
+
+- **存储选型**：SQLite（rusqlite 0.40 `bundled`，静态编译 sqlite3.c，无运行时环境依赖）；五表 schema：`events`（append-only 真相源 + superseded 标记）、`topics`（recall 只查这层）、`relation_card`（单行常驻）、`promises`（M2 填充）、`self_history`（agent 自我行为审计：demote 等）。
+- **分层与衰减**：`Tier { Episodic(0.05/天, 阈值 0.02), Trivia(0.15/天, 阈值 0.10) }`；删除只发生在 `apply_decay`（打开时 + 每轮 apply 后 + recall 前），agent 侧只有 remember/demote（加强/减弱），demote = `weight * 0.3` + self_history 记账，可被再次提起复活（activate：激活 +1、时间刷新、`weight*1.1` 封顶 1.0）。
+- **编号消解（resolve_topic）**：Stage 1 词法阻塞（canonical/alias 精确直通；字符 bigram Jaccard 近邻 top-3 收候选）→ Stage 2 LLM 仲裁（`{"merge": "<id>" | "none"}`）；候选为空 → `Create{uncertain:false}`，仲裁 none → `Create{uncertain:true}`——"宁可晚合并，不可错合并"，假阴性可恢复、假阳性不可恢复。
+- **提取窄而弱**：三类事实（user/self/relation）× 三动作（new/extend/correct）只抄字面；correct 走"旧陈述 superseded + 状态整段替换"路径。合并/仲裁/卡维护全部 JSON 契约（```` ```json ```` 围栏剥壳解析），经 `LlmAdapter` 接缝注入，测试用脚本化 mock（dsh-llm-mock，按调用序号出栈）。
+- **诚实出口**：recall 无命中（词法 < 0.05 不参与）→ `RecallOutcome { none: true }`，模型可见文本"无相关记忆"。
+- **服务装配**：`MemoryLlmProvider`（`memory-llm`，包装 `Arc<dyn LlmAdapter>`）与 `MemoryStore`（`memory`）均为 `Service`；`plugins/plugin-memory` apply 时打开存储 + 注册四工具（remember/recall/inventory/demote），工具执行期经 `ctx.get::<MemoryStore>()` 取共享实例（storage 在 `Arc` 内、`Mutex<Connection>`）。
+- **update_topic_merged 事务纪律**：别名簿记在**同一事务**内查 canonical（SQL）比较——`std::sync::Mutex<Connection>` 不可重入，禁止持锁回调 `self.*`（M1 曾因 `canonical_of` 嵌套加锁死锁，回归修复）。
+- **events() 形状**：公开为 `(event_id, statement, ts, superseded)` 四元组——验收"correct 取代旧陈述"需要 superseded 可见；真相源永不删行。
+- **M1 范围**：内核 + 接线 + 8 验收测试（新建/别名合并/保守新建/correct 取代/衰减与复活/诚实出口/重开持久化/四工具）；M2 才接 agent-loop（turn 挂钩、关系卡常驻注入、pre-step 主动 recall、真实 LLM 适配器）。

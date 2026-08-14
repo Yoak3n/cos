@@ -1,0 +1,21 @@
+[package]
+name = "dsh-agent-loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "turn/step 驱动器，实现 dsh-agent（P4）"
+
+[dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-core = { path = "../dsh-core" }
+dsh-llm = { path = "../dsh-llm" }
+dsh-session = { path = "../dsh-session" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
+futures.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+dsh-llm-mock = { path = "../dsh-llm-mock" }

@@ -1,0 +1,17 @@
+[package]
+name = "plugin-bash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "bash 工具（P6，v1 前台执行）"
+
+[dependencies]
+dsh-core = { path = "../../crates/dsh-core" }
+dsh-loader = { path = "../../crates/dsh-loader" }
+dsh-session = { path = "../../crates/dsh-session" }
+dsh-shell = { path = "../../crates/dsh-shell" }
+dsh-tools = { path = "../../crates/dsh-tools" }
+futures.workspace = true
+inventory.workspace = true
+serde.workspace = true
+serde_json.workspace = true

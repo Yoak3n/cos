@@ -1,0 +1,10 @@
+[package]
+name = "dsh-system-prompt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "prompt 段 + 工具 schema 装配（P5）"
+
+[dependencies]
+dsh-core = { path = "../dsh-core" }
+serde_json.workspace = true

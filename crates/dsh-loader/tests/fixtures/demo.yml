@@ -1,0 +1,11 @@
+# P2 验收 fixture：依赖序（llm 先于 agent-loop/todo）+ disabled 条目跳过。
+- name: agent-loop
+- name: todo
+- name: llm
+  config:
+    model: mock
+- name: demo
+  config:
+    message: 你好
+- name: nope
+  disabled: true
