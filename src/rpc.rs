@@ -8,12 +8,16 @@
 //! agent_settled），驱动自会话日志（先写日志再行动，事件即日志的投影）。
 //!
 //! 已实现命令：`prompt`（含 streamingBehavior: steer|followUp）、`steer`、`follow_up`、
-//! `abort`、`get_state`、`get_messages`、`get_last_assistant_text`、`get_session_stats`、
-//! `get_commands`、`exit`（cos 扩展）。未实现命令返回 `success: false`（协议兼容失败响应）。
+//! `abort`、`cancel_message`（cos 扩展：取消队列中指定 id 的待处理消息）、`get_state`、
+//! `get_messages`、`get_last_assistant_text`、`get_session_stats`、`get_commands`、
+//! `exit`（cos 扩展）。未实现命令返回 `success: false`（协议兼容失败响应）。
+//!
+//! 排队消息 id：`prompt`/`steer`/`follow_up` 的命令 `id` 即排队消息 id（响应
+//! `data.messageId` 原样回显；缺省自动生成 `m-<n>`），可用 `cancel_message` 取消。
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cos_agent::AgentStatus;
 use cos_llm::{ChunkDelta, ContentBlock, Message, ToolCall, UserMessage};
@@ -65,6 +69,7 @@ where
     });
 
     let mut lines = tokio::io::BufReader::new(reader).lines();
+    let next_id = AtomicU64::new(0);
     loop {
         let line = match &cancel {
             Some(flag) => tokio::select! {
@@ -99,7 +104,7 @@ where
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let response = dispatch(&command, &request, assembled);
+        let response = dispatch(&command, &request, assembled, &next_id);
         write_line(&writer, &response).await?;
         if command == "exit" {
             return Ok(());
@@ -108,7 +113,7 @@ where
 }
 
 /// 命令分发：pi 响应信封（`type: response` + `command` + `success` + `data?`/`error?`）。
-fn dispatch(command: &str, request: &Value, assembled: &Assembled) -> Value {
+fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &AtomicU64) -> Value {
     let id = request.get("id").cloned();
     let respond = |success: bool, data: Option<Value>, error: Option<String>| {
         let mut value = json!({
@@ -136,7 +141,8 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled) -> Value {
             if message.is_empty() {
                 return respond(false, None, Some("message 缺失".into()));
             }
-            let user = user_message(request);
+            let message_id = message_id(request, next_id);
+            let user = user_message(request, &message_id);
             // pi 语义：agent 正在处理时未指定 streamingBehavior → 拒绝
             if agent.status() == AgentStatus::Running {
                 match request.get("streamingBehavior").and_then(Value::as_str) {
@@ -156,7 +162,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled) -> Value {
             } else {
                 agent.followup(user);
             }
-            respond(true, None, None)
+            respond(true, Some(json!({"messageId": message_id})), None)
         }
         "steer" => {
             let message = request
@@ -167,8 +173,9 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled) -> Value {
             if message.is_empty() {
                 return respond(false, None, Some("message 缺失".into()));
             }
-            agent.steer(user_message(request));
-            respond(true, None, None)
+            let message_id = message_id(request, next_id);
+            agent.steer(user_message(request, &message_id));
+            respond(true, Some(json!({"messageId": message_id})), None)
         }
         "follow_up" => {
             let message = request
@@ -179,8 +186,28 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled) -> Value {
             if message.is_empty() {
                 return respond(false, None, Some("message 缺失".into()));
             }
-            agent.followup(user_message(request));
-            respond(true, None, None)
+            let message_id = message_id(request, next_id);
+            agent.followup(user_message(request, &message_id));
+            respond(true, Some(json!({"messageId": message_id})), None)
+        }
+        "cancel_message" => {
+            // cos 扩展：取消队列中指定 id 的待处理消息（已开始处理的无法取消）
+            let message_id = request
+                .get("messageId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if message_id.is_empty() {
+                return respond(false, None, Some("messageId 缺失".into()));
+            }
+            if agent.cancel_message(message_id) {
+                respond(true, Some(json!({"cancelled": true})), None)
+            } else {
+                respond(
+                    false,
+                    None,
+                    Some(format!("队列中无此消息: {message_id}（可能已开始处理）")),
+                )
+            }
         }
         "abort" => {
             // pi 语义：中止当前操作、保留已排队消息
@@ -272,11 +299,28 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled) -> Value {
     }
 }
 
-/// 构造用户消息：`message` + 可选 `images`。
+/// 排队消息 id：命令带 `id` 则沿用（pi 关联语义 + 取消身份合一），否则自动生成 `m-<n>`。
+fn message_id(request: &Value, next_id: &AtomicU64) -> String {
+    request
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("m-{}", next_id.fetch_add(1, Ordering::Relaxed)))
+}
+
+/// 构造用户消息：`message` + 可选 `images` + 排队 id。
 /// pi 图片格式 `{"type":"image","data":<base64>,"mimeType":...}` → data URL；
 /// 纯字符串按原样透传（兼容旧格式）。
-fn user_message(request: &Value) -> UserMessage {
-    let mut user = UserMessage::new(request.get("message").and_then(Value::as_str).unwrap_or(""));
+fn user_message(request: &Value, message_id: &str) -> UserMessage {
+    let mut user = UserMessage {
+        content: request
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        images: Vec::new(),
+        id: Some(message_id.to_string()),
+    };
     if let Some(images) = request.get("images").and_then(Value::as_array) {
         for image in images {
             if let Some(url) = image.as_str() {

@@ -40,14 +40,19 @@ pub struct UserMessage {
     /// 附加图片（URL 或 data URL；空 = 纯文本）。旧 JSONL 缺省为空，向后兼容。
     #[serde(default)]
     pub images: Vec<String>,
+    /// 排队身份（RPC prompt/steer/follow_up 的命令 id；用于取消队列中某条消息）。
+    /// 缺省 None = 不可按 id 取消（旧 JSONL 兼容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 impl UserMessage {
-    /// 由文本构造用户消息（无图片）。
+    /// 由文本构造用户消息（无图片、无排队 id）。
     pub fn new(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             images: Vec::new(),
+            id: None,
         }
     }
 

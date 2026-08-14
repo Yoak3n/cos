@@ -68,6 +68,29 @@ impl Inbox {
         inner.next_step.clear();
     }
 
+    /// 按 id 移除队列中的消息（next-step 优先、再 next-turn，各取首个匹配）。
+    /// 返回是否移除。已 claim 出队（开始处理）的消息不在队列中，返回 false。
+    pub fn remove_by_id(&self, id: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(position) = inner
+            .next_step
+            .iter()
+            .position(|m| m.id.as_deref() == Some(id))
+        {
+            inner.next_step.remove(position);
+            return true;
+        }
+        if let Some(position) = inner
+            .next_turn
+            .iter()
+            .position(|m| m.id.as_deref() == Some(id))
+        {
+            inner.next_turn.remove(position);
+            return true;
+        }
+        false
+    }
+
     /// 是否有任何待处理消息。
     pub fn has_pending(&self) -> bool {
         let inner = self.inner.lock().unwrap();
@@ -82,5 +105,56 @@ impl Inbox {
     /// next-turn 队列长度。
     pub fn next_turn_len(&self) -> usize {
         self.inner.lock().unwrap().next_turn.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(id: &str, content: &str) -> UserMessage {
+        UserMessage {
+            content: content.into(),
+            images: Vec::new(),
+            id: Some(id.into()),
+        }
+    }
+
+    #[test]
+    fn remove_by_id_drops_queued_message() {
+        let inbox = Inbox::new();
+        inbox.push(InboxTarget::NextTurn, msg("m-1", "任务A"));
+        inbox.push(InboxTarget::NextTurn, msg("m-2", "任务B"));
+        inbox.push(InboxTarget::NextTurn, msg("m-3", "任务C"));
+        inbox.push(InboxTarget::NextStep, msg("s-1", "steering"));
+
+        // next-step 优先
+        assert!(inbox.remove_by_id("s-1"));
+        assert!(!inbox.remove_by_id("s-1"), "重复移除应为 false");
+
+        // next-turn 命中
+        assert!(inbox.remove_by_id("m-2"));
+        assert_eq!(inbox.next_turn_len(), 2);
+
+        // 已消费/不存在的 id → false
+        assert!(!inbox.remove_by_id("m-2"));
+        assert!(!inbox.remove_by_id("不存在"));
+
+        // 剩余消息顺序不变（claim 每次取一条）
+        let first = inbox.claim(InboxTarget::NextTurn);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].content, "任务A");
+        let second = inbox.claim(InboxTarget::NextTurn);
+        assert_eq!(second[0].content, "任务C");
+    }
+
+    #[test]
+    fn remove_by_id_ignores_messages_without_id() {
+        let inbox = Inbox::new();
+        let mut anonymous = UserMessage::new("无 id 消息");
+        anonymous.images.clear();
+        inbox.push(InboxTarget::NextTurn, anonymous);
+        assert!(!inbox.remove_by_id("无 id 消息"), "id 匹配而非内容匹配");
+        assert_eq!(inbox.next_turn_len(), 1);
     }
 }

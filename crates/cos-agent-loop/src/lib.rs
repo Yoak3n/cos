@@ -625,6 +625,10 @@ impl Agent for LoopAgent {
         self.core.inbox.next_turn_len() + self.core.inbox.next_step_len()
     }
 
+    fn cancel_message(&self, id: &str) -> bool {
+        self.core.inbox.remove_by_id(id)
+    }
+
     fn cancel(&self, cause: AbortCause, keep_inbox: bool) {
         if !keep_inbox {
             self.core.inbox.clear();

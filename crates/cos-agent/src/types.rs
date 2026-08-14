@@ -200,6 +200,12 @@ pub trait AgentTrait: Send + Sync {
         0
     }
 
+    /// 取消队列中指定 id 的待处理消息（已出队开始处理的消息无法取消）。
+    /// 返回是否找到并移除；缺省不支持。
+    fn cancel_message(&self, _id: &str) -> bool {
+        false
+    }
+
     /// 取消：清除排队（除非 keep_inbox）并中止活动 turn。
     fn cancel(&self, cause: cos_session::AbortCause, keep_inbox: bool);
 

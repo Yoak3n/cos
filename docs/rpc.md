@@ -23,10 +23,11 @@ cos --config cordis.yml --rpc [--session <id>] [--no-save]
 
 | 命令 | 说明 |
 |---|---|
-| `prompt` | 发送用户消息（异步接受；响应先到，事件随后流式）。正在处理时须带 `streamingBehavior`: `"steer"`（当前 turn 工具执行完后、下一次模型调用前送达）或 `"followUp"`（agent 空闲后送达）；不指定则报错 |
+| `prompt` | 发送用户消息（异步接受；响应先到，事件随后流式）。正在处理时须带 `streamingBehavior`: `"steer"`（当前 turn 工具执行完后、下一次模型调用前送达）或 `"followUp"`（agent 空闲后送达）；不指定则报错。响应 `data.messageId` = 该消息的排队 id（命令 `id` 即消息 id；缺省自动生成） |
 | `steer` | 排队 steering 消息（工具执行完后、下一次模型调用前送达） |
 | `follow_up` | 排队后续消息（agent 处理完后送达） |
 | `abort` | 中止当前操作（保留已排队消息） |
+| `cancel_message` | **cos 扩展**：取消队列中指定 id 的待处理消息（已开始处理的无法取消） |
 | `get_state` | `{isStreaming, sessionId, sessionName, messageCount, pendingMessageCount}` |
 | `get_messages` | 模型可见消息历史（pi 风格 role/content） |
 | `get_last_assistant_text` | 最后一条助手文本（无则 `text: null`） |
@@ -40,13 +41,24 @@ cos --config cordis.yml --rpc [--session <id>] [--no-save]
 
 ```json
 {"id": "req-1", "type": "prompt", "message": "你好"}
-{"id": "req-1", "type": "response", "command": "prompt", "success": true}
+{"id": "req-1", "type": "response", "command": "prompt", "success": true, "data": {"messageId": "req-1"}}
 ```
 
 带图片（pi `ImageContent` 格式 → data URL）：
 
 ```json
 {"type": "prompt", "message": "这是什么？", "images": [{"type": "image", "data": "<base64>", "mimeType": "image/png"}]}
+```
+
+### 取消排队消息
+
+`prompt`/`steer`/`follow_up` 的响应带 `data.messageId`（命令 `id` 即消息 id；缺省自动生成
+`m-<n>`）。处理中（agent 忙）排队的消息可精准取消；已开始处理的消息不在队列中，取消失败：
+
+```json
+{"id": "req-2", "type": "prompt", "message": "任务A", "streamingBehavior": "followUp"}
+{"id": "req-3", "type": "cancel_message", "messageId": "req-2"}
+{"id": "req-3", "type": "response", "command": "cancel_message", "success": true, "data": {"cancelled": true}}
 ```
 
 ## 事件
