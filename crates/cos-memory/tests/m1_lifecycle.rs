@@ -337,3 +337,69 @@ async fn tools_remember_recall_inventory_demote() {
     drop(store);
     let _ = std::fs::remove_file(&path);
 }
+
+/// 提取输出非 JSON（推理模型输出思考过程）→ 追加纠偏说明重试一次 → 成功落库。
+#[tokio::test]
+async fn extraction_retries_once_when_first_output_is_reasoning_text() {
+    let path = temp_db("extract-retry");
+    let store = store_at(
+        &path,
+        vec![
+            // 第一次：模型输出思考过程而非 JSON（opencode 网关实测行为）
+            MockReply::text(
+                "让我先分析一下这段对话……用户提到了咖啡，这是关于偏好的事实。\
+                 接下来我会给出提取结果。",
+            ),
+            // 重试：纠偏后输出合法 JSON
+            MockReply::text(
+                r#"{"facts":[{"kind":"user","action":"new","topic_text":"咖啡偏好","statement":"用户喜欢手冲咖啡"}],"card_notes":{"profile":["用户喜欢手冲咖啡"],"agent_model":[],"relationship":[]}}"#,
+            ),
+            MockReply::text(r#"{"text":"用户喜欢手冲咖啡"}"#),
+        ],
+    );
+
+    store
+        .apply_turn(
+            &turn_pair_from_text("我喜欢手冲咖啡", "好的，记住了"),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+
+    let topics = store.topics().unwrap();
+    assert_eq!(topics.len(), 1, "重试后应成功落库");
+    assert_eq!(topics[0].canonical_name, "咖啡偏好");
+    assert_eq!(topics[0].state_summary, "用户喜欢手冲咖啡");
+    assert_eq!(store.card().unwrap().profile, "用户喜欢手冲咖啡");
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 两次都非 JSON → 报错（含首次与重试错误，便于诊断）。
+#[tokio::test]
+async fn extraction_fails_loud_when_both_attempts_are_not_json() {
+    let path = temp_db("extract-retry-fail");
+    let store = store_at(
+        &path,
+        vec![
+            MockReply::text("思考过程……没有 JSON"),
+            MockReply::text("还是不输出 JSON"),
+        ],
+    );
+
+    let error = store
+        .apply_turn(
+            &turn_pair_from_text("我喜欢手冲咖啡", "好的，记住了"),
+            now_ms(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("提取"), "{error}");
+    assert!(error.contains("重试仍失败"), "{error}");
+    assert!(store.topics().unwrap().is_empty(), "失败不应留痕");
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}

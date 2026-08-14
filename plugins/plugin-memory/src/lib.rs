@@ -322,8 +322,8 @@ fn format_hits(hits: &[MemoryHit]) -> serde_json::Value {
     })
 }
 
-/// 写挂钩（M2/M3）：`agent/pre-step`，每 turn 第一步进入前消化上一 turn（会话 → 记忆），
-/// 并记录当前 turn 进度（digest 节流的依据）。
+/// 写挂钩（M2/M3）：`agent/pre-step`，每 turn 第一步进入前**异步**消化上一 turn
+/// （spawn 不阻塞交互；recall 因此有一轮滞后），并记录当前 turn 进度（digest 节流的依据）。
 ///
 /// 记忆失败不阻塞对话（陪伴优先）：错误只落 stderr；记忆是尽力而为的旁路。
 fn register_write_hook(ctx: &Context, store: Arc<MemoryStore>) -> CoreResult<EffectHandle> {
@@ -338,12 +338,17 @@ fn register_write_hook(ctx: &Context, store: Arc<MemoryStore>) -> CoreResult<Eff
                     return decision;
                 };
                 let (user, assistant) = turn_text(&session, previous);
-                if (!user.is_empty() || !assistant.is_empty())
-                    && let Err(error) = store
-                        .apply_turn(&turn_pair_from_text(user, assistant), now_ms())
-                        .await
-                {
-                    eprintln!("[memory] 消化 turn {previous} 失败: {error}");
+                if !user.is_empty() || !assistant.is_empty() {
+                    // 异步消化：spawn 不阻塞 step 交互；代价 = 同 turn 的 recall 有一轮滞后
+                    let store = store.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = store
+                            .apply_turn(&turn_pair_from_text(user, assistant), now_ms())
+                            .await
+                        {
+                            eprintln!("[memory] 消化 turn {previous} 失败: {error}");
+                        }
+                    });
                 }
             }
             if payload.step == 1 {

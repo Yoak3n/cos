@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use cos_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
 use cos_agent_loop::LoopFactory;
 use cos_core::{Context, Plugin};
-use cos_llm::{LlmAdapter, LlmRegistry, LlmRequest, LlmStream, UserMessage};
+use cos_llm::{LlmAdapter, LlmError, LlmRegistry, LlmRequest, LlmStream, UserMessage};
 use cos_llm_mock::{MockAdapter, MockReply};
 use cos_memory::MemoryStore;
 use cos_session::SessionEventData;
@@ -56,6 +56,46 @@ const EMPTY_EXTRACT: &str = r#"{"facts":[],"card_notes":{}}"#;
 const COMPRESS_SUMMARY: &str = r#"{"summary":"压缩摘要要点"}"#;
 const EMPTY_DIGEST: &str = r#"{"profile_notes":[],"agent_model_notes":[],"relationship_notes":[]}"#;
 
+/// 按 system 提示路由的记忆 mock：提取/压缩/digest 各回各的 JSON。
+/// 异步消化（spawn）与请求路径并发 ⇒ 调用顺序不定，不能再按调用序号编排脚本。
+struct MemoryRouter {
+    extract: MockReply,
+    compress: MockReply,
+    digest: MockReply,
+}
+
+impl MemoryRouter {
+    fn new() -> Self {
+        Self {
+            extract: MockReply::text(EMPTY_EXTRACT),
+            compress: MockReply::text(COMPRESS_SUMMARY),
+            digest: MockReply::text(EMPTY_DIGEST),
+        }
+    }
+}
+
+impl LlmAdapter for MemoryRouter {
+    fn id(&self) -> &str {
+        "memory-router"
+    }
+
+    fn stream(&self, request: &LlmRequest) -> LlmStream {
+        let system = request.system.as_deref().unwrap_or("");
+        let reply = if system.contains("提取器") {
+            &self.extract
+        } else if system.contains("压缩器") {
+            &self.compress
+        } else if system.contains("消化器") {
+            &self.digest
+        } else {
+            panic!("未知记忆 system 提示: {system}")
+        };
+        let chunks: Vec<Result<cos_llm::StreamChunk, LlmError>> =
+            reply.chunks.clone().into_iter().map(Ok).collect();
+        Box::pin(futures::stream::iter(chunks))
+    }
+}
+
 #[tokio::test]
 async fn long_session_compresses_tail_and_runs_digest() {
     let path = temp_db();
@@ -71,28 +111,11 @@ async fn long_session_compresses_tail_and_runs_digest() {
         .set_factory(Arc::new(LoopFactory))
         .unwrap();
 
-    // 记忆 mock 脚本（按调用序）：
-    // E×5（turn 2–6 预步 apply 的空提取）→ C（turn 6 请求压缩）→ E → C → E → C → D（digest）
-    let memory_script = vec![
-        MockReply::text(EMPTY_EXTRACT),
-        MockReply::text(EMPTY_EXTRACT),
-        MockReply::text(EMPTY_EXTRACT),
-        MockReply::text(EMPTY_EXTRACT),
-        MockReply::text(EMPTY_EXTRACT),
-        MockReply::text(COMPRESS_SUMMARY),
-        MockReply::text(EMPTY_EXTRACT),
-        MockReply::text(COMPRESS_SUMMARY),
-        MockReply::text(EMPTY_EXTRACT),
-        MockReply::text(COMPRESS_SUMMARY),
-        MockReply::text(EMPTY_DIGEST),
-    ];
+    // 记忆 mock：按 system 提示路由（异步消化与请求并发，调用顺序不定）
     ctx.provide(LlmRegistry::new(&ctx)).unwrap();
     ctx.get::<LlmRegistry>()
         .unwrap()
-        .register(
-            "default",
-            Arc::new(MockAdapter::new("memory-mock", memory_script)),
-        )
+        .register("default", Arc::new(MemoryRouter::new()))
         .unwrap();
     // 阈值 40：turn 5 累计 40 不超；turn 6（48）起压缩；keep_tail = 4；8 turn 触发 digest
     MemoryPlugin

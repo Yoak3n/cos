@@ -87,9 +87,11 @@ struct RawCardMerge {
 }
 
 /// 提取系统提示（窄而弱：只抄字面，不推断）。
+/// 对推理模型特别强调：思考过程禁止出现、第一行就是 ```json 代码块。
 const EXTRACT_PROMPT: &str = r#"你是记忆提取器，只做字面抄录，不做任何推断。
 输入：一段对话 turn（用户说了什么 + 助手说了什么）。
-输出（严格 JSON）：
+输出（严格 JSON，必须放在 ```json 代码块里）：
+```json
 {
   "facts": [
     {"kind": "user|self|relation", "action": "new|extend|correct",
@@ -97,12 +99,18 @@ const EXTRACT_PROMPT: &str = r#"你是记忆提取器，只做字面抄录，不
   ],
   "card_notes": {"profile": ["关于用户的事实行"], "agent_model": ["关于助手自己的事实行"], "relationship": ["关于两人关系的事实行"]}
 }
+```
 规则：
 - kind: user=关于用户, self=关于助手自己, relation=两人关系
 - action: new=全新事实, extend=对既有事实的延伸, correct=用户纠正旧事实（"不/其实/纠正"）
 - 只抄原文明确说出的，猜测、情绪归因、模式总结一律不写
-- 无事实时输出空数组；card_notes 可为空对象
-- 只输出 JSON，不要解释。"#;
+- 无事实时输出 {"facts":[],"card_notes":{}}
+- 严禁输出思考过程、解释或任何 JSON 之外的文字；第一行就是 ```json"#;
+
+/// 解析失败时的纠偏说明（重试追加到用户载荷末尾）。
+const JSON_CORRECTION_NOTE: &str = "\n\n注意：你上一次的输出不是合法 JSON。\
+    现在只输出一个 JSON 对象，不要任何思考过程、解释或多余文字；\
+    允许用 ```json 代码块包裹。";
 
 /// 仲裁系统提示（保守偏置：不确定输出 none）。
 const ARBITRATE_PROMPT: &str = r#"你是记忆编号消解仲裁员。
@@ -243,11 +251,31 @@ pub(crate) async fn extract(
     );
     let request = LlmRequest {
         system: Some(EXTRACT_PROMPT.into()),
-        messages: vec![Message::User(UserMessage::new(user_payload))],
+        messages: vec![Message::User(UserMessage::new(user_payload.clone()))],
         tools: Vec::new(),
     };
     let text = collect_text(llm.as_ref(), request).await?;
-    let raw: RawExtraction = parse_json_output(&text, "提取")?;
+    let raw: RawExtraction = match parse_json_output(&text, "提取") {
+        Ok(raw) => raw,
+        Err(first_error) => {
+            // 推理模型常见失败：输出思考过程而非 JSON。
+            // 追加纠偏说明重试一次；再失败才报错（保留首次错误便于诊断）。
+            let retry = LlmRequest {
+                system: Some(EXTRACT_PROMPT.into()),
+                messages: vec![Message::User(UserMessage::new(format!(
+                    "{}\n{}",
+                    user_payload, JSON_CORRECTION_NOTE
+                )))],
+                tools: Vec::new(),
+            };
+            let retry_text = collect_text(llm.as_ref(), retry).await?;
+            parse_json_output::<RawExtraction>(&retry_text, "提取(重试)").map_err(
+                |retry_error| {
+                    MemoryError::Invalid(format!("{first_error}；重试仍失败：{retry_error}"))
+                },
+            )?
+        }
+    };
 
     let mut facts = Vec::new();
     for fact in raw.facts {
