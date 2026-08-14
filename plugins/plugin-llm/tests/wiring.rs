@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use dsh_core::{Context, Plugin};
-use dsh_llm::{LlmAdapter, LlmRegistry};
-use dsh_llm_mock::MockAdapter;
+use cos_core::{Context, Plugin};
+use cos_llm::{LlmAdapter, LlmRegistry};
+use cos_llm_mock::MockAdapter;
 use plugin_llm::{ChainEntry, LlmConfig, LlmPlugin, ProviderEntry};
 use serde_json::json;
 
@@ -106,7 +106,7 @@ fn mock_provider_fails_when_consumed() {
         .unwrap();
     runtime.block_on(async {
         use futures::StreamExt;
-        let mut stream = adapter.stream(&dsh_llm::LlmRequest {
+        let mut stream = adapter.stream(&cos_llm::LlmRequest {
             system: None,
             messages: vec![],
             tools: vec![],

@@ -137,7 +137,7 @@ async fn main() {
         return;
     }
 
-    println!("=== dsh-rust 演示完成 ===");
+    println!("=== cos 演示完成 ===");
     println!(
         "会话事件 {} 条，模型可见消息 {} 条",
         report.events.len(),

@@ -14,7 +14,7 @@
 //!     chains:
 //!       - { id: main, providers: [opencode-go, zen-free] }
 //! ```
-//! `kind` 由各 Provider crate 经 `dsh_llm::llm_factory!` 注册（opencode/mock/…）；
+//! `kind` 由各 Provider crate 经 `cos_llm::llm_factory!` 注册（opencode/mock/…）；
 //! 后备链 `providers` 主在前，主在产出任何 chunk 前失败自动切下一个（`FallbackAdapter`）。
 //!
 //! 装配纪律：宿主先提供空 `LlmRegistry`（服务 `"llm"`），本插件按配置填充；
@@ -24,8 +24,8 @@
 
 #![warn(missing_docs)]
 
-use dsh_core::{Context, CoreError, Plugin, Validate};
-use dsh_llm::LlmRegistry;
+use cos_core::{Context, CoreError, Plugin, Validate};
+use cos_llm::LlmRegistry;
 use serde::Deserialize;
 
 /// 一条提供商配置（apply 时构建并注册）。
@@ -88,4 +88,4 @@ impl Plugin for LlmPlugin {
     }
 }
 
-dsh_loader::plugin!("llm", LlmPlugin);
+cos_loader::plugin!("llm", LlmPlugin);

@@ -3,22 +3,22 @@ name = "cos"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "dsh-rust CLI 宿主（Rust 复刻 dsh 插件化主干，A 形态）"
+description = "cos CLI 宿主（插件化主干，A 形态）"
 
 [dependencies]
-dsh-agent = { path = "crates/dsh-agent" }
-dsh-agent-loop = { path = "crates/dsh-agent-loop" }
-dsh-core = { path = "crates/dsh-core" }
-dsh-invariants = { path = "crates/dsh-invariants" }
-dsh-llm = { path = "crates/dsh-llm" }
-dsh-llm-mock = { path = "crates/dsh-llm-mock" }
-dsh-llm-opencode = { path = "crates/dsh-llm-opencode" }
-dsh-loader = { path = "crates/dsh-loader" }
-dsh-memory = { path = "crates/dsh-memory" }
-dsh-session = { path = "crates/dsh-session" }
-dsh-shell = { path = "crates/dsh-shell" }
-dsh-system-prompt = { path = "crates/dsh-system-prompt" }
-dsh-tools = { path = "crates/dsh-tools" }
+cos-agent = { path = "crates/cos-agent" }
+cos-agent-loop = { path = "crates/cos-agent-loop" }
+cos-core = { path = "crates/cos-core" }
+cos-invariants = { path = "crates/cos-invariants" }
+cos-llm = { path = "crates/cos-llm" }
+cos-llm-mock = { path = "crates/cos-llm-mock" }
+cos-llm-opencode = { path = "crates/cos-llm-opencode" }
+cos-loader = { path = "crates/cos-loader" }
+cos-memory = { path = "crates/cos-memory" }
+cos-session = { path = "crates/cos-session" }
+cos-shell = { path = "crates/cos-shell" }
+cos-system-prompt = { path = "crates/cos-system-prompt" }
+cos-tools = { path = "crates/cos-tools" }
 plugin-bash = { path = "plugins/plugin-bash" }
 plugin-demo = { path = "plugins/plugin-demo" }
 plugin-llm = { path = "plugins/plugin-llm" }

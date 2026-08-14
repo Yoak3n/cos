@@ -6,16 +6,16 @@ license.workspace = true
 description = "todo_write 工具（P5，session 态清单）"
 
 [dependencies]
-dsh-agent = { path = "../../crates/dsh-agent" }
-dsh-core = { path = "../../crates/dsh-core" }
-dsh-loader = { path = "../../crates/dsh-loader" }
-dsh-session = { path = "../../crates/dsh-session" }
-dsh-tools = { path = "../../crates/dsh-tools" }
+cos-agent = { path = "../../crates/cos-agent" }
+cos-core = { path = "../../crates/cos-core" }
+cos-loader = { path = "../../crates/cos-loader" }
+cos-session = { path = "../../crates/cos-session" }
+cos-tools = { path = "../../crates/cos-tools" }
 futures.workspace = true
 inventory.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-dsh-llm = { path = "../../crates/dsh-llm" }
+cos-llm = { path = "../../crates/cos-llm" }
 tokio.workspace = true

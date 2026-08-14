@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use dsh_core::{Context, Plugin};
-use dsh_llm::LlmRegistry;
-use dsh_llm_mock::MockAdapter;
-use dsh_memory::MemoryStore;
-use dsh_tools::{ToolRegistry, ToolRun};
+use cos_core::{Context, Plugin};
+use cos_llm::LlmRegistry;
+use cos_llm_mock::MockAdapter;
+use cos_memory::MemoryStore;
+use cos_tools::{ToolRegistry, ToolRun};
 use plugin_memory::{MemoryConfig, MemoryPlugin};
 use serde_json::json;
 

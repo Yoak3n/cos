@@ -10,14 +10,14 @@
 
 - 理由：编译期枚举（linkme 收集变体）穷尽性收益小、跨 crate 收集机制复杂；运行时开放与 B 形态 FFI（字符串事件名 + 二进制载荷）天然兼容。
 - 风险应对：waterfall 按 事件名 + 载荷 `TypeId` 配对（`ListenerBody::Waterfall { ty, .. }`）；downcast 失败 dev 模式 panic / release 记日志跳过（P1 硬化）。
-- 落点：`crates/dsh-core/src/events.rs`。
+- 落点：`crates/cos-core/src/events.rs`。
 
 ## D2 异步运行时 —— tokio
 
 stream 与工具并发需要；async-trait 处理 trait 对象。
 
-- P0 暂不在 dsh-core 引入 tokio（库本身只含类型与 futures 组合子）；测试与驱动器侧（P1 起）接入。
-- 落点：`[workspace.dependencies] tokio`；dsh-core 仅 dev-dependencies。
+- P0 暂不在 cos-core 引入 tokio（库本身只含类型与 futures 组合子）；测试与驱动器侧（P1 起）接入。
+- 落点：`[workspace.dependencies] tokio`；cos-core 仅 dev-dependencies。
 
 ## D3 配置校验 —— serde + schemars
 
@@ -31,7 +31,7 @@ serde 反序列化 + `Validate` trait 手写校验；schemars 生成 JSON Schema
 
 ## D5 错误类型 —— 边界具体枚举
 
-dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现可自由使用 anyhow。
+cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现可自由使用 anyhow。
 
 ## D6 scope —— A 形态就做
 
@@ -80,7 +80,7 @@ dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 - **存储选型**：SQLite（rusqlite 0.40 `bundled`，静态编译 sqlite3.c，无运行时环境依赖）；五表 schema：`events`（append-only 真相源 + superseded 标记）、`topics`（recall 只查这层）、`relation_card`（单行常驻）、`promises`（M2 填充）、`self_history`（agent 自我行为审计：demote 等）。
 - **分层与衰减**：`Tier { Episodic(0.05/天, 阈值 0.02), Trivia(0.15/天, 阈值 0.10) }`；删除只发生在 `apply_decay`（打开时 + 每轮 apply 后 + recall 前），agent 侧只有 remember/demote（加强/减弱），demote = `weight * 0.3` + self_history 记账，可被再次提起复活（activate：激活 +1、时间刷新、`weight*1.1` 封顶 1.0）。
 - **编号消解（resolve_topic）**：Stage 1 词法阻塞（canonical/alias 精确直通；字符 bigram Jaccard 近邻 top-3 收候选）→ Stage 2 LLM 仲裁（`{"merge": "<id>" | "none"}`）；候选为空 → `Create{uncertain:false}`，仲裁 none → `Create{uncertain:true}`——"宁可晚合并，不可错合并"，假阴性可恢复、假阳性不可恢复。
-- **提取窄而弱**：三类事实（user/self/relation）× 三动作（new/extend/correct）只抄字面；correct 走"旧陈述 superseded + 状态整段替换"路径。合并/仲裁/卡维护全部 JSON 契约（```` ```json ```` 围栏剥壳解析），经 `LlmAdapter` 接缝注入，测试用脚本化 mock（dsh-llm-mock，按调用序号出栈）。
+- **提取窄而弱**：三类事实（user/self/relation）× 三动作（new/extend/correct）只抄字面；correct 走"旧陈述 superseded + 状态整段替换"路径。合并/仲裁/卡维护全部 JSON 契约（```` ```json ```` 围栏剥壳解析），经 `LlmAdapter` 接缝注入，测试用脚本化 mock（cos-llm-mock，按调用序号出栈）。
 - **诚实出口**：recall 无命中（词法 < 0.05 不参与）→ `RecallOutcome { none: true }`，模型可见文本"无相关记忆"。
 - **服务装配**：`MemoryLlmProvider`（`memory-llm`，包装 `Arc<dyn LlmAdapter>`）与 `MemoryStore`（`memory`）均为 `Service`；`plugins/plugin-memory` apply 时打开存储 + 注册四工具（remember/recall/inventory/demote），工具执行期经 `ctx.get::<MemoryStore>()` 取共享实例（storage 在 `Arc` 内、`Mutex<Connection>`）。
 - **update_topic_merged 事务纪律**：别名簿记在**同一事务**内查 canonical（SQL）比较——`std::sync::Mutex<Connection>` 不可重入，禁止持锁回调 `self.*`（M1 曾因 `canonical_of` 嵌套加锁死锁，回归修复）。
@@ -89,7 +89,7 @@ dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 
 ## 阶段 2（桌面陪伴 agent）—— M2 决策
 
-- **真实 LLM 适配器（dsh-llm-opencode）**：OpenAI 兼容 `chat/completions`；`LlmAdapter::stream` 是同步方法 → 内部 `tokio::spawn` + unbounded channel 转发（调用方须在 runtime 内，同 mock 语义）。**流式优先、自动非流式兜底**：SSE 在未产出任何 chunk 前遇服务端失败（HTTP 5xx / `{"type":"error"}` 块）→ 重发 `stream:false` 单次请求，`choices[0].message.content`（空则 `reasoning_content`）+ usage 合成一个 chunk；4xx（鉴权/余额）不重试原样报错；已产出部分 chunk 后失败不再兜底（避免重复内容）。错误一律作为流内 `Err` 交付，不进 stderr。
+- **真实 LLM 适配器（cos-llm-opencode）**：OpenAI 兼容 `chat/completions`；`LlmAdapter::stream` 是同步方法 → 内部 `tokio::spawn` + unbounded channel 转发（调用方须在 runtime 内，同 mock 语义）。**流式优先、自动非流式兜底**：SSE 在未产出任何 chunk 前遇服务端失败（HTTP 5xx / `{"type":"error"}` 块）→ 重发 `stream:false` 单次请求，`choices[0].message.content`（空则 `reasoning_content`）+ usage 合成一个 chunk；4xx（鉴权/余额）不重试原样报错；已产出部分 chunk 后失败不再兜底（避免重复内容）。错误一律作为流内 `Err` 交付，不进 stderr。
 - **opencode 端点（用户确认 + 实测）**：**订阅网关 base URL = `https://opencode.ai/zen/go/v1`**（OpenCode Go，
   订阅制，OpenAI 兼容；models.dev、bifrost、GoModel 三方实现一致：Bearer + `/v1/chat/completions`，支持 SSE）。
   实测（当日）：`/zen/go/v1/models` 正常；`/zen/go/v1/chat/completions` 对该 key **服务端恒 500**
@@ -117,18 +117,18 @@ dsh-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   失败只落 stderr、guard 不推进（下次重试），陪伴不因 digest 崩。
 - **M3 实端点暴露的 loop 缺陷**：LLM 请求失败路径（429 等）旧实现提前 return 漏记 `step/end` →
   step-pairing 不变量违规；修复为失败分支同样先写 StepEnd 日志再收束（回归测试
-  `crates/dsh-agent-loop/tests/error_path.rs` 钉死）。
+  `crates/cos-agent-loop/tests/error_path.rs` 钉死）。
 - **实端点限流观测**：免费模型 `deepseek-v4-flash-free` 有 FreeUsageLimitError（429），当日测试消耗
   较快；主 turn 与 digest 失败均**软降级**（流内 Err → 日志 → 继续），digest 失败不设 guard 下回重试。
 
 ## LLM 统一管理（plugin-llm）
 
-- **构型**：`dsh-llm::LlmRegistry`（服务 `"llm"`）与 ToolRegistry/AgentRegistry 同构——宿主装配空
+- **构型**：`cos-llm::LlmRegistry`（服务 `"llm"`）与 ToolRegistry/AgentRegistry 同构——宿主装配空
   注册表，`plugins/plugin-llm` 按 yml 配置填充（providers 按 kind 实例化 + chains 后备链），
-  消费者按 id/链 id 解析。工厂经 `dsh_llm::llm_factory!("kind", build_fn)`（inventory 静态收集，
+  消费者按 id/链 id 解析。工厂经 `cos_llm::llm_factory!("kind", build_fn)`（inventory 静态收集，
   同 loader `plugin!` 模式，fn 指针 const 可构造）；新 provider = 新 Provider crate + 工厂注册，
-  插件树零改动。Provider crate 只依赖 Definition（dsh-llm），插件不得依赖 Provider（接缝纪律保持）。
-- **后备链语义（FallbackAdapter）**：纯 futures unfold 状态机（无 spawn、dsh-llm 不引 tokio）；
+  插件树零改动。Provider crate 只依赖 Definition（cos-llm），插件不得依赖 Provider（接缝纪律保持）。
+- **后备链语义（FallbackAdapter）**：纯 futures unfold 状态机（无 spawn、cos-llm 不引 tokio）；
   主 provider 在产出任何 chunk 前失败（错误/空流）→ 记错误并切下一个；**已产出后失败 → 原样传播
   不切换**（避免内容重复）；全部未产出 → 交付最后错误。这正是 opencode 网关抖动/流式不稳定的通用解。
 - **loader 宿主服务边界**：loader 的 inject 校验只认插件 provide 表，宿主装配的服务不可见——

@@ -1,5 +1,5 @@
 <!-- 编辑注：本文件为记忆插件设计文档（用户提供，2026 版）。原文已去掉原框架相关内容。
-     落地形态见 PLAN.md 的 B 阶段精神：记忆内核在 crates/dsh-memory，接线在 plugins/plugin-memory。 -->
+     落地形态见 PLAN.md 的 B 阶段精神：记忆内核在 crates/cos-memory，接线在 plugins/plugin-memory。 -->
 
 # 记忆插件设计 —— 关系层记忆
 

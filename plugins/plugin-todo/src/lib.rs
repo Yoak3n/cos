@@ -1,7 +1,7 @@
 //! plugin-todo —— todo_write 工具（P5，同 dsh 的 session 态清单）。
 //!
-//! 接缝纪律（PLAN.md §2）：本插件只依赖 Definition crate（dsh-tools / dsh-agent /
-//! dsh-session / dsh-core），不依赖任何 Provider 或 dsh-agent-loop。
+//! 接缝纪律（PLAN.md §2）：本插件只依赖 Definition crate（cos-tools / cos-agent /
+//! cos-session / cos-core），不依赖任何 Provider 或 cos-agent-loop。
 //!
 //! 语义：整表替换、最后写入胜出（dsh `todo/write`）；会话态记录经
 //! `current_initiator()` 因果链写入当前 agent 的会话日志（无发起者时跳过）。
@@ -10,10 +10,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use dsh_agent::current_initiator;
-use dsh_core::{Context, CoreError, Plugin, Service, Validate};
-use dsh_session::{SessionEventData, TodoItem};
-use dsh_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
+use cos_agent::current_initiator;
+use cos_core::{Context, CoreError, Plugin, Service, Validate};
+use cos_session::{SessionEventData, TodoItem};
+use cos_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 
@@ -96,7 +96,7 @@ impl Tool for TodoTool {
         &self,
         _ctx: &Context,
         run: &ToolRun,
-    ) -> BoxFuture<'static, Result<ToolOutcome, dsh_session::ToolError>> {
+    ) -> BoxFuture<'static, Result<ToolOutcome, cos_session::ToolError>> {
         let store = self.store.clone();
         let arguments = run.arguments.clone();
         Box::pin(async move {
@@ -105,7 +105,7 @@ impl Tool for TodoTool {
                 Err(message) => {
                     return Ok(ToolOutcome::error(
                         message,
-                        dsh_session::ToolError {
+                        cos_session::ToolError {
                             name: "TodoWrite".into(),
                             code: "INVALID_TODOS".into(),
                         },
@@ -152,4 +152,4 @@ impl Plugin for TodoPlugin {
     }
 }
 
-dsh_loader::plugin!("todo", TodoPlugin);
+cos_loader::plugin!("todo", TodoPlugin);

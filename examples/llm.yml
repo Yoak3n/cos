@@ -1,4 +1,4 @@
-# dsh-rust LLM 统一管理演示（plugin-llm）：多 provider + 后备链。
+# cos LLM 统一管理演示（plugin-llm）：多 provider + 后备链。
 # 用法：cos --config examples/llm.yml --agent-llm main --prompt "..."
 #   - 主 agent 走后备链 main（opencode-go 优先，未产出即失败自动切 zen-free）
 #   - 记忆插件 llm: main 共用同一条链

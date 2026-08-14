@@ -1,14 +1,14 @@
 //! plugin-bash —— bash 工具（P6，v1 前台执行、无后台 job、无 sandbox）。
 //!
-//! 接缝纪律：只依赖 Definition crate（dsh-tools / dsh-shell / dsh-core）。
+//! 接缝纪律：只依赖 Definition crate（cos-tools / cos-shell / cos-core）。
 
 #![warn(missing_docs)]
 
 use std::sync::Arc;
 
-use dsh_core::{Context, CoreError, Plugin, Validate};
-use dsh_shell::{ShellOutput, ShellProvider};
-use dsh_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
+use cos_core::{Context, CoreError, Plugin, Validate};
+use cos_shell::{ShellOutput, ShellProvider};
+use cos_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 
@@ -44,14 +44,14 @@ impl Tool for BashTool {
         &self,
         ctx: &Context,
         run: &ToolRun,
-    ) -> BoxFuture<'static, Result<ToolOutcome, dsh_session::ToolError>> {
+    ) -> BoxFuture<'static, Result<ToolOutcome, cos_session::ToolError>> {
         let shell = match ctx.get::<ShellProvider>() {
             Ok(provider) => provider.inner.clone(),
             Err(_) => {
                 return Box::pin(async {
                     Ok(ToolOutcome::error(
                         "shell 服务未装配".to_string(),
-                        dsh_session::ToolError {
+                        cos_session::ToolError {
                             name: "Shell".into(),
                             code: "NO_SHELL".into(),
                         },
@@ -65,7 +65,7 @@ impl Tool for BashTool {
                 Ok(output) => Ok(format_output(output)),
                 Err(error) => Ok(ToolOutcome::error(
                     error.to_string(),
-                    dsh_session::ToolError {
+                    cos_session::ToolError {
                         name: "Shell".into(),
                         code: "SPAWN_FAILED".into(),
                     },
@@ -89,7 +89,7 @@ fn format_output(output: ShellOutput) -> ToolOutcome {
     } else {
         ToolOutcome::error(
             text,
-            dsh_session::ToolError {
+            cos_session::ToolError {
                 name: "Shell".into(),
                 code: format!("EXIT_{}", output.exit_code),
             },
@@ -115,4 +115,4 @@ impl Plugin for BashPlugin {
     }
 }
 
-dsh_loader::plugin!("bash", BashPlugin);
+cos_loader::plugin!("bash", BashPlugin);

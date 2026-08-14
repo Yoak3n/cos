@@ -1,9 +1,0 @@
-﻿[package]
-name = "dsh-contract"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "版本化契约 crate，B 形态地基（版本号 P0 即存在）"
-
-[dependencies]
-

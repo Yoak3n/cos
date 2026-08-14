@@ -1,0 +1,21 @@
+[package]
+name = "cos-agent-loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "turn/step 驱动器，实现 cos-agent（P4）"
+
+[dependencies]
+cos-agent = { path = "../cos-agent" }
+cos-core = { path = "../cos-core" }
+cos-llm = { path = "../cos-llm" }
+cos-session = { path = "../cos-session" }
+cos-system-prompt = { path = "../cos-system-prompt" }
+cos-tools = { path = "../cos-tools" }
+futures.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+cos-llm-mock = { path = "../cos-llm-mock" }

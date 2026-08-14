@@ -1,0 +1,19 @@
+[package]
+name = "cos-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "记忆内核：关系层记忆（关系卡/账本/事件/承诺/自史 + 消解/合并/衰减/召回，M1）"
+
+[dependencies]
+cos-core = { path = "../cos-core" }
+cos-llm = { path = "../cos-llm" }
+futures.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+cos-llm-mock = { path = "../cos-llm-mock" }
+tokio.workspace = true

@@ -6,15 +6,15 @@
 
 use std::sync::Arc;
 
-use dsh_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
-use dsh_agent_loop::LoopFactory;
-use dsh_core::{Context, Plugin};
-use dsh_llm::{LlmRegistry, UserMessage};
-use dsh_llm_mock::{MockAdapter, MockReply};
-use dsh_memory::MemoryStore;
-use dsh_session::SessionEventData;
-use dsh_system_prompt::PromptSections;
-use dsh_tools::ToolRegistry;
+use cos_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
+use cos_agent_loop::LoopFactory;
+use cos_core::{Context, Plugin};
+use cos_llm::{LlmRegistry, UserMessage};
+use cos_llm_mock::{MockAdapter, MockReply};
+use cos_memory::MemoryStore;
+use cos_session::SessionEventData;
+use cos_system_prompt::PromptSections;
+use cos_tools::ToolRegistry;
 use plugin_memory::{MemoryConfig, MemoryPlugin};
 
 fn temp_db() -> String {

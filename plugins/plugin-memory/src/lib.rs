@@ -5,24 +5,24 @@
 //!   recall + Mode B 最近聊过 + 关系卡常驻注入 system；
 //! - 会话末（`agent/status` → Idle）：digest 慢路径（统计 + 转录 → 卡三段注记，M3）。
 //!
-//! 接缝纪律：只依赖 Definition crate（dsh-memory / dsh-tools / dsh-core / dsh-session /
-//! dsh-agent / dsh-llm），不依赖 Provider 或 dsh-agent-loop。
+//! 接缝纪律：只依赖 Definition crate（cos-memory / cos-tools / cos-core / cos-session /
+//! cos-agent / cos-llm），不依赖 Provider 或 cos-agent-loop。
 
 #![warn(missing_docs)]
 
 use std::sync::Arc;
 
-use dsh_agent::{
+use cos_agent::{
     AgentStatus, AgentStatusPayload, PreStepDecision, PreStepPayload, current_initiator,
 };
-use dsh_core::{Context, CoreError, CoreResult, EffectHandle, Plugin, Validate};
-use dsh_llm::{LlmRegistry, LlmRequest, Message};
-use dsh_memory::{
+use cos_core::{Context, CoreError, CoreResult, EffectHandle, Plugin, Validate};
+use cos_llm::{LlmRegistry, LlmRequest, Message};
+use cos_memory::{
     MemoryHit, MemoryStore, demote_topic, inventory_topics, now_ms, recall_memories, remember_fact,
     turn_pair_from_text,
 };
-use dsh_session::SessionEventData;
-use dsh_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
+use cos_session::SessionEventData;
+use cos_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 
@@ -91,14 +91,14 @@ impl Tool for RecallTool {
         &self,
         ctx: &Context,
         run: &ToolRun,
-    ) -> BoxFuture<'static, Result<ToolOutcome, dsh_session::ToolError>> {
+    ) -> BoxFuture<'static, Result<ToolOutcome, cos_session::ToolError>> {
         let store = match ctx.get::<MemoryStore>() {
             Ok(store) => store,
             Err(_) => {
                 return Box::pin(async {
                     Ok(ToolOutcome::error(
                         "memory 服务未装配".to_string(),
-                        dsh_session::ToolError {
+                        cos_session::ToolError {
                             name: "Memory".into(),
                             code: "NO_MEMORY".into(),
                         },
@@ -118,7 +118,7 @@ impl Tool for RecallTool {
                 )),
                 Err(error) => Ok(ToolOutcome::error(
                     error.to_string(),
-                    dsh_session::ToolError {
+                    cos_session::ToolError {
                         name: "Memory".into(),
                         code: "RECALL_FAILED".into(),
                     },
@@ -155,14 +155,14 @@ impl Tool for RememberTool {
         &self,
         ctx: &Context,
         run: &ToolRun,
-    ) -> BoxFuture<'static, Result<ToolOutcome, dsh_session::ToolError>> {
+    ) -> BoxFuture<'static, Result<ToolOutcome, cos_session::ToolError>> {
         let store = match ctx.get::<MemoryStore>() {
             Ok(store) => store,
             Err(_) => {
                 return Box::pin(async {
                     Ok(ToolOutcome::error(
                         "memory 服务未装配".to_string(),
-                        dsh_session::ToolError {
+                        cos_session::ToolError {
                             name: "Memory".into(),
                             code: "NO_MEMORY".into(),
                         },
@@ -177,7 +177,7 @@ impl Tool for RememberTool {
                 Ok(topic_id) => Ok(ToolOutcome::ok(format!("已记入（topic {topic_id}）"))),
                 Err(error) => Ok(ToolOutcome::error(
                     error.to_string(),
-                    dsh_session::ToolError {
+                    cos_session::ToolError {
                         name: "Memory".into(),
                         code: "REMEMBER_FAILED".into(),
                     },
@@ -213,14 +213,14 @@ impl Tool for InventoryTool {
         &self,
         ctx: &Context,
         run: &ToolRun,
-    ) -> BoxFuture<'static, Result<ToolOutcome, dsh_session::ToolError>> {
+    ) -> BoxFuture<'static, Result<ToolOutcome, cos_session::ToolError>> {
         let store = match ctx.get::<MemoryStore>() {
             Ok(store) => store,
             Err(_) => {
                 return Box::pin(async {
                     Ok(ToolOutcome::error(
                         "memory 服务未装配".to_string(),
-                        dsh_session::ToolError {
+                        cos_session::ToolError {
                             name: "Memory".into(),
                             code: "NO_MEMORY".into(),
                         },
@@ -237,7 +237,7 @@ impl Tool for InventoryTool {
                 )),
                 Err(error) => Ok(ToolOutcome::error(
                     error.to_string(),
-                    dsh_session::ToolError {
+                    cos_session::ToolError {
                         name: "Memory".into(),
                         code: "INVENTORY_FAILED".into(),
                     },
@@ -274,14 +274,14 @@ impl Tool for DemoteTool {
         &self,
         ctx: &Context,
         run: &ToolRun,
-    ) -> BoxFuture<'static, Result<ToolOutcome, dsh_session::ToolError>> {
+    ) -> BoxFuture<'static, Result<ToolOutcome, cos_session::ToolError>> {
         let store = match ctx.get::<MemoryStore>() {
             Ok(store) => store,
             Err(_) => {
                 return Box::pin(async {
                     Ok(ToolOutcome::error(
                         "memory 服务未装配".to_string(),
-                        dsh_session::ToolError {
+                        cos_session::ToolError {
                             name: "Memory".into(),
                             code: "NO_MEMORY".into(),
                         },
@@ -299,7 +299,7 @@ impl Tool for DemoteTool {
                 Ok(None) => Ok(ToolOutcome::ok("未找到匹配话题".to_string())),
                 Err(error) => Ok(ToolOutcome::error(
                     error.to_string(),
-                    dsh_session::ToolError {
+                    cos_session::ToolError {
                         name: "Memory".into(),
                         code: "DEMOTE_FAILED".into(),
                     },
@@ -506,7 +506,7 @@ fn register_digest_hook(
 }
 
 /// 会话日志 → 完整转录（digest 输入；turn 边界打标）。
-fn transcript_text(session: &dsh_session::Session) -> String {
+fn transcript_text(session: &cos_session::Session) -> String {
     let mut lines: Vec<String> = Vec::new();
     for event in session.events() {
         match &event.data {
@@ -536,7 +536,7 @@ fn last_user_text(request: &LlmRequest) -> Option<String> {
 }
 
 /// 从会话日志重建某 turn 的用户/助手文本（记忆写路径投影）。
-fn turn_text(session: &dsh_session::Session, turn: u32) -> (String, String) {
+fn turn_text(session: &cos_session::Session, turn: u32) -> (String, String) {
     let mut user = String::new();
     let mut assistant = String::new();
     let mut current = 0u32;
@@ -675,4 +675,4 @@ impl Plugin for MemoryPlugin {
     }
 }
 
-dsh_loader::plugin!("memory", MemoryPlugin);
+cos_loader::plugin!("memory", MemoryPlugin);

@@ -1,4 +1,4 @@
-//! cos —— dsh-rust CLI 宿主库（A 形态收口，P6）。
+//! cos —— CLI 宿主库（A 形态收口，P6）。
 //!
 //! `run` 是完整演示链路：cordis.yml 装配插件树 → demo agent（mock LLM：
 //! 工具调用 → 回复）→ 不变量校验 → JSONL 持久化 + 重放校验 → 优雅退出
@@ -9,21 +9,21 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dsh_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
-use dsh_agent_loop::LoopFactory;
-use dsh_core::{Context, Plugin};
-use dsh_invariants::{InvariantRegistry, register_defaults};
-use dsh_llm::{ChunkDelta, LlmAdapter, LlmRegistry, Message, StreamChunk, ToolCall, UserMessage};
-use dsh_llm_mock::{MockAdapter, MockReply};
-use dsh_llm_opencode::{OpencodeAdapter, OpencodeConfig};
-use dsh_loader::{self as loader, Profile};
-use dsh_memory::MemoryStore;
-use dsh_session::{
+use cos_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
+use cos_agent_loop::LoopFactory;
+use cos_core::{Context, Plugin};
+use cos_invariants::{InvariantRegistry, register_defaults};
+use cos_llm::{ChunkDelta, LlmAdapter, LlmRegistry, Message, StreamChunk, ToolCall, UserMessage};
+use cos_llm_mock::{MockAdapter, MockReply};
+use cos_llm_opencode::{OpencodeAdapter, OpencodeConfig};
+use cos_loader::{self as loader, Profile};
+use cos_memory::MemoryStore;
+use cos_session::{
     AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, load_jsonl, save_jsonl,
 };
-use dsh_shell::provide_local_shell;
-use dsh_system_prompt::PromptSections;
-use dsh_tools::ToolRegistry;
+use cos_shell::provide_local_shell;
+use cos_system_prompt::PromptSections;
+use cos_tools::ToolRegistry;
 use thiserror::Error;
 
 /// 运行配置。
@@ -84,13 +84,13 @@ pub enum AppError {
     Load(#[from] loader::LoadError),
     /// 会话失败。
     #[error(transparent)]
-    Session(#[from] dsh_session::SessionError),
+    Session(#[from] cos_session::SessionError),
     /// 内核失败。
     #[error(transparent)]
-    Core(#[from] dsh_core::CoreError),
+    Core(#[from] cos_core::CoreError),
     /// agent 失败。
     #[error(transparent)]
-    Agent(#[from] dsh_agent::AgentError),
+    Agent(#[from] cos_agent::AgentError),
     /// I/O 失败。
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -161,7 +161,7 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     }
     root.get::<PromptSections>()
         .expect("刚装配")
-        .append("persona", "你是 dsh-rust 演示助手，工具结果要如实汇报。");
+        .append("persona", "你是 cos 演示助手，工具结果要如实汇报。");
     register_defaults(&root.get::<InvariantRegistry>().expect("刚装配"));
     root.get::<AgentRegistry>()
         .expect("刚装配")
@@ -258,7 +258,7 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     // 会话末 digest 收尾（M3，记忆插件装配时）：统计 + 转录 → 卡三段注记（慢路径）
     if let Ok(store) = root.get::<MemoryStore>() {
         let transcript = transcript_of(agent.session());
-        if let Err(error) = store.digest(&transcript, dsh_memory::now_ms()).await {
+        if let Err(error) = store.digest(&transcript, cos_memory::now_ms()).await {
             eprintln!("[memory] 会话末 digest 失败: {error}");
         }
     }
@@ -293,17 +293,17 @@ async fn wait_for_cancel(flag: Arc<AtomicBool>) {
 }
 
 /// 会话日志 → 完整转录（会话末 digest 输入；turn 边界打标）。
-fn transcript_of(session: &dsh_session::Session) -> String {
+fn transcript_of(session: &cos_session::Session) -> String {
     let mut lines: Vec<String> = Vec::new();
     for event in session.events() {
         match &event.data {
-            dsh_session::SessionEventData::TurnStart { turn } => {
+            cos_session::SessionEventData::TurnStart { turn } => {
                 lines.push(format!("— turn {turn} —"));
             }
-            dsh_session::SessionEventData::UserMessage(message) => {
+            cos_session::SessionEventData::UserMessage(message) => {
                 lines.push(format!("用户: {}", message.content));
             }
-            dsh_session::SessionEventData::AssistantMessage { message, .. } => {
+            cos_session::SessionEventData::AssistantMessage { message, .. } => {
                 lines.push(format!("助手: {}", message.text()));
             }
             _ => {}

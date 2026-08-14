@@ -1,0 +1,18 @@
+[package]
+name = "cos-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM 接缝：Message/ContentBlock、LlmAdapter trait、stream、提供商注册表（P3/LLM 统一管理）"
+
+[dependencies]
+cos-core = { path = "../cos-core" }
+futures.workspace = true
+inventory.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+cos-llm-mock = { path = "../cos-llm-mock" }
+tokio.workspace = true

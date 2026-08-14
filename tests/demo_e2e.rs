@@ -52,21 +52,21 @@ async fn demo_end_to_end_snapshot_invariants_replay_unload() {
     // 2. derive_messages 重放一致（含完整 call/result 对 + 回流回复）
     assert_eq!(report.messages.len(), 4);
     match &report.messages[0] {
-        dsh_llm::Message::User(user) => assert_eq!(user.content, "帮我记一条演示 todo"),
+        cos_llm::Message::User(user) => assert_eq!(user.content, "帮我记一条演示 todo"),
         other => panic!("期望 User，实际 {other:?}"),
     }
     match &report.messages[2] {
-        dsh_llm::Message::Tool(tool) => assert_eq!(tool.content, "已写入 1 条任务"),
+        cos_llm::Message::Tool(tool) => assert_eq!(tool.content, "已写入 1 条任务"),
         other => panic!("期望 Tool，实际 {other:?}"),
     }
     // 任务内容在 todo/write 会话事件里（工具经因果链写入）
     let todo_written = report.events.iter().any(|event| {
-        matches!(&event.data, dsh_session::SessionEventData::TodoWrite { todos }
+        matches!(&event.data, cos_session::SessionEventData::TodoWrite { todos }
             if todos.iter().any(|item| item.content.contains("演示任务")))
     });
     assert!(todo_written, "会话日志应含 todo/write 且内容为演示任务");
     match &report.messages[3] {
-        dsh_llm::Message::Assistant(assistant) => {
+        cos_llm::Message::Assistant(assistant) => {
             assert_eq!(assistant.text(), "已记录演示任务。")
         }
         other => panic!("期望 Assistant，实际 {other:?}"),

@@ -68,25 +68,183 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "cos"
 version = "0.1.0"
 dependencies = [
- "dsh-agent",
- "dsh-agent-loop",
- "dsh-core",
- "dsh-invariants",
- "dsh-llm",
- "dsh-llm-mock",
- "dsh-llm-opencode",
- "dsh-loader",
- "dsh-memory",
- "dsh-session",
- "dsh-shell",
- "dsh-system-prompt",
- "dsh-tools",
+ "cos-agent",
+ "cos-agent-loop",
+ "cos-core",
+ "cos-invariants",
+ "cos-llm",
+ "cos-llm-mock",
+ "cos-llm-opencode",
+ "cos-loader",
+ "cos-memory",
+ "cos-session",
+ "cos-shell",
+ "cos-system-prompt",
+ "cos-tools",
  "futures",
  "plugin-bash",
  "plugin-demo",
  "plugin-llm",
  "plugin-memory",
  "plugin-todo",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-agent"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-llm",
+ "cos-session",
+ "futures",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-agent-loop"
+version = "0.1.0"
+dependencies = [
+ "cos-agent",
+ "cos-core",
+ "cos-llm",
+ "cos-llm-mock",
+ "cos-session",
+ "cos-system-prompt",
+ "cos-tools",
+ "futures",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-contract"
+version = "0.1.0"
+
+[[package]]
+name = "cos-core"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-invariants"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-session",
+]
+
+[[package]]
+name = "cos-llm"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-llm-mock",
+ "futures",
+ "inventory",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-llm-mock"
+version = "0.1.0"
+dependencies = [
+ "cos-llm",
+ "futures",
+ "inventory",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "cos-llm-opencode"
+version = "0.1.0"
+dependencies = [
+ "cos-llm",
+ "futures",
+ "inventory",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "cos-loader"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "futures",
+ "inventory",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-memory"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-llm",
+ "cos-llm-mock",
+ "futures",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-session"
+version = "0.1.0"
+dependencies = [
+ "cos-llm",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "cos-shell"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "futures",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "cos-system-prompt"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "serde_json",
+]
+
+[[package]]
+name = "cos-tools"
+version = "0.1.0"
+dependencies = [
+ "cos-core",
+ "cos-session",
+ "futures",
  "serde_json",
  "thiserror",
  "tokio",
@@ -101,164 +259,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "dsh-agent"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "dsh-llm",
- "dsh-session",
- "futures",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "dsh-agent-loop"
-version = "0.1.0"
-dependencies = [
- "dsh-agent",
- "dsh-core",
- "dsh-llm",
- "dsh-llm-mock",
- "dsh-session",
- "dsh-system-prompt",
- "dsh-tools",
- "futures",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "dsh-contract"
-version = "0.1.0"
-
-[[package]]
-name = "dsh-core"
-version = "0.1.0"
-dependencies = [
- "futures",
- "serde",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "dsh-invariants"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "dsh-session",
-]
-
-[[package]]
-name = "dsh-llm"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "dsh-llm-mock",
- "futures",
- "inventory",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "dsh-llm-mock"
-version = "0.1.0"
-dependencies = [
- "dsh-llm",
- "futures",
- "inventory",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "dsh-llm-opencode"
-version = "0.1.0"
-dependencies = [
- "dsh-llm",
- "futures",
- "inventory",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "dsh-loader"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "futures",
- "inventory",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "dsh-memory"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "dsh-llm",
- "dsh-llm-mock",
- "futures",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "dsh-session"
-version = "0.1.0"
-dependencies = [
- "dsh-llm",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "dsh-shell"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "futures",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "dsh-system-prompt"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "serde_json",
-]
-
-[[package]]
-name = "dsh-tools"
-version = "0.1.0"
-dependencies = [
- "dsh-core",
- "dsh-session",
- "futures",
- "serde_json",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -841,11 +841,11 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 name = "plugin-bash"
 version = "0.1.0"
 dependencies = [
- "dsh-core",
- "dsh-loader",
- "dsh-session",
- "dsh-shell",
- "dsh-tools",
+ "cos-core",
+ "cos-loader",
+ "cos-session",
+ "cos-shell",
+ "cos-tools",
  "futures",
  "inventory",
  "serde",
@@ -856,10 +856,10 @@ dependencies = [
 name = "plugin-demo"
 version = "0.1.0"
 dependencies = [
- "dsh-core",
- "dsh-loader",
- "dsh-session",
- "dsh-tools",
+ "cos-core",
+ "cos-loader",
+ "cos-session",
+ "cos-tools",
  "futures",
  "inventory",
  "serde",
@@ -870,10 +870,10 @@ dependencies = [
 name = "plugin-llm"
 version = "0.1.0"
 dependencies = [
- "dsh-core",
- "dsh-llm",
- "dsh-llm-mock",
- "dsh-loader",
+ "cos-core",
+ "cos-llm",
+ "cos-llm-mock",
+ "cos-loader",
  "futures",
  "inventory",
  "serde",
@@ -885,16 +885,16 @@ dependencies = [
 name = "plugin-memory"
 version = "0.1.0"
 dependencies = [
- "dsh-agent",
- "dsh-agent-loop",
- "dsh-core",
- "dsh-llm",
- "dsh-llm-mock",
- "dsh-loader",
- "dsh-memory",
- "dsh-session",
- "dsh-system-prompt",
- "dsh-tools",
+ "cos-agent",
+ "cos-agent-loop",
+ "cos-core",
+ "cos-llm",
+ "cos-llm-mock",
+ "cos-loader",
+ "cos-memory",
+ "cos-session",
+ "cos-system-prompt",
+ "cos-tools",
  "futures",
  "inventory",
  "serde",
@@ -906,12 +906,12 @@ dependencies = [
 name = "plugin-todo"
 version = "0.1.0"
 dependencies = [
- "dsh-agent",
- "dsh-core",
- "dsh-llm",
- "dsh-loader",
- "dsh-session",
- "dsh-tools",
+ "cos-agent",
+ "cos-core",
+ "cos-llm",
+ "cos-loader",
+ "cos-session",
+ "cos-tools",
  "futures",
  "inventory",
  "serde",

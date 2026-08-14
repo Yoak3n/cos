@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use dsh_core::{Context, CoreError, Plugin, Validate};
-use dsh_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
+use cos_core::{Context, CoreError, Plugin, Validate};
+use cos_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 
@@ -41,7 +41,7 @@ impl Tool for EchoTool {
         &self,
         _ctx: &Context,
         run: &ToolRun,
-    ) -> BoxFuture<'static, Result<ToolOutcome, dsh_session::ToolError>> {
+    ) -> BoxFuture<'static, Result<ToolOutcome, cos_session::ToolError>> {
         let text = run.arguments["text"].as_str().unwrap_or("").to_string();
         Box::pin(async move { Ok(ToolOutcome::ok(format!("echo: {text}"))) })
     }
@@ -65,4 +65,4 @@ impl Plugin for DemoPlugin {
     }
 }
 
-dsh_loader::plugin!("demo", DemoPlugin);
+cos_loader::plugin!("demo", DemoPlugin);

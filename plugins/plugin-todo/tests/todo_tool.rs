@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use dsh_agent::{Agent, AgentError, AgentOptions, AgentStatus, Maintenance};
-use dsh_core::{Context, Plugin};
-use dsh_session::{Session, SessionEventData, TodoItem, TodoStatus};
-use dsh_tools::{ToolRegistry, ToolRun};
+use cos_agent::{Agent, AgentError, AgentOptions, AgentStatus, Maintenance};
+use cos_core::{Context, Plugin};
+use cos_session::{Session, SessionEventData, TodoItem, TodoStatus};
+use cos_tools::{ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
 use plugin_todo::{TodoConfig, TodoPlugin, TodoStore};
 use serde_json::json;
@@ -58,7 +58,7 @@ async fn todo_tool_appends_session_event_under_initiator() {
         id: "sess-t".into(),
         session: session.clone(),
     });
-    dsh_agent::with_initiator(agent, async {
+    cos_agent::with_initiator(agent, async {
         let outcome = registry
             .execute(
                 &root,
@@ -114,15 +114,15 @@ impl Agent for StubAgent {
         AgentStatus::Idle
     }
 
-    fn send(&self, _message: dsh_llm::UserMessage, _target: dsh_agent::InboxTarget, _wake: bool) {}
+    fn send(&self, _message: cos_llm::UserMessage, _target: cos_agent::InboxTarget, _wake: bool) {}
 
-    fn followup(&self, _message: dsh_llm::UserMessage) {}
+    fn followup(&self, _message: cos_llm::UserMessage) {}
 
-    fn steer(&self, _message: dsh_llm::UserMessage) {}
+    fn steer(&self, _message: cos_llm::UserMessage) {}
 
-    fn inject(&self, _message: dsh_llm::UserMessage) {}
+    fn inject(&self, _message: cos_llm::UserMessage) {}
 
-    fn cancel(&self, _cause: dsh_session::AbortCause, _keep_inbox: bool) {}
+    fn cancel(&self, _cause: cos_session::AbortCause, _keep_inbox: bool) {}
 
     fn when_idle(&self) -> BoxFuture<'static, ()> {
         Box::pin(async {})
