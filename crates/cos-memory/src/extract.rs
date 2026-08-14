@@ -171,7 +171,8 @@ pub(crate) async fn collect_text(llm: &dyn LlmAdapter, request: LlmRequest) -> R
     Ok(text)
 }
 
-/// 剥掉 ```json 围栏再解析。
+/// 剥掉 ```json 围栏再解析；仍失败时抓取文本里第一个 `{…}` JSON 块兜底
+/// （推理模型可能把 JSON 混在 reasoning 文本里，见 opencode 网关实测）。
 pub(crate) fn parse_json_output<T: for<'de> Deserialize<'de>>(
     text: &str,
     context: &str,
@@ -186,8 +187,48 @@ pub(crate) fn parse_json_output<T: for<'de> Deserialize<'de>>(
                 .and_then(|rest| rest.strip_suffix("```"))
         })
         .unwrap_or(trimmed);
-    serde_json::from_str(json.trim())
-        .map_err(|error| MemoryError::Invalid(format!("{context} 输出不是合法 JSON: {error}")))
+    if let Ok(value) = serde_json::from_str(json.trim()) {
+        return Ok(value);
+    }
+    // 兜底：抓第一个 {…} JSON 块（可能前后有推理文本）
+    if let Some(start) = json.find('{')
+        && let Some(end) = json.rfind('}')
+        && end > start
+        && let Ok(value) = serde_json::from_str(&json[start..=end])
+    {
+        return Ok(value);
+    }
+    let head: String = json.chars().take(200).collect();
+    Err(MemoryError::Invalid(format!(
+        "{context} 输出不是合法 JSON（原文头: {head}…）"
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_json_output;
+
+    #[test]
+    fn parses_json_embedded_in_reasoning_text() {
+        // 推理模型把 JSON 混在 reasoning 文本里（opencode 网关实测行为）
+        let text = "让我想想\n用户喜欢咖啡。\n\
+                    {\"facts\":[{\"kind\":\"user\",\"action\":\"new\",\
+                    \"topic_text\":\"咖啡偏好\",\"statement\":\"用户喜欢手冲咖啡\"}],\
+                    \"card_notes\":{}}\n好的。";
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            facts: Vec<serde_json::Value>,
+        }
+        let raw: Raw = parse_json_output(text, "测试").unwrap();
+        assert_eq!(raw.facts.len(), 1);
+    }
+
+    #[test]
+    fn parse_failure_reports_head() {
+        let result: Result<serde_json::Value, _> = parse_json_output("完全没有 JSON", "测试");
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("不是合法 JSON"), "{error}");
+    }
 }
 
 /// 提取：关系卡 + turn pair → 字面事实 + 卡注记。

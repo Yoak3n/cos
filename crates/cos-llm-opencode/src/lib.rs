@@ -24,7 +24,7 @@ use cos_llm::{
 use futures::StreamExt;
 use serde::Deserialize;
 
-/// 提供商工厂构建函数（`llm_factory!` 注册）：配置 `{base_url, api_key, model, streaming?}`。
+/// 提供商工厂构建函数（`llm_factory!` 注册）：配置 `{base_url, api_key, model, streaming?, max_tokens?}`。
 pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError> {
     /// 提供商配置（插件 yml 里的 `config` 段）。
     #[derive(Deserialize)]
@@ -34,6 +34,9 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
         model: String,
         #[serde(default = "default_streaming")]
         streaming: bool,
+        /// 输出预算（缺省 2048；推理模型无预算会把输出全花在 reasoning 上、content 出不来）。
+        #[serde(default = "default_max_tokens")]
+        max_tokens: Option<u32>,
         /// 可输入内容标注（缺省 text；视觉模型声明 image）。
         #[serde(default)]
         input_content: Vec<InputContent>,
@@ -41,6 +44,9 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
     fn default_streaming() -> bool {
         // opencode zen/go 网关流式不稳定（500 / 只出推理文本），默认非流式最稳
         false
+    }
+    fn default_max_tokens() -> Option<u32> {
+        Some(2048)
     }
     let config: ProviderConfig = serde_json::from_value(config.clone())
         .map_err(|error| LlmError::Failure(format!("opencode 提供商配置无效: {error}")))?;
@@ -54,6 +60,7 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
         api_key: config.api_key,
         model: config.model,
         streaming: config.streaming,
+        max_tokens: config.max_tokens,
         input_content,
     })))
 }
@@ -73,6 +80,8 @@ pub struct OpencodeConfig {
     /// 某些网关（opencode zen/go）流式只出 `reasoning_content` 且时有 500，
     /// 非流式反而给出完整 `content` —— 此时关掉流式更稳。
     pub streaming: bool,
+    /// 输出预算（None = 不发送）；推理模型无预算会把输出全花在 reasoning 上。
+    pub max_tokens: Option<u32>,
     /// 可输入内容标注（`input_content()` 依据；视觉模型含 [`InputContent::Image`]）。
     pub input_content: Vec<InputContent>,
 }
@@ -211,6 +220,9 @@ impl OpencodeAdapter {
             "messages": messages,
             "stream": streaming,
         });
+        if let Some(max_tokens) = self.config.max_tokens {
+            body["max_tokens"] = serde_json::json!(max_tokens);
+        }
         if !request.tools.is_empty() {
             body["tools"] = serde_json::json!(request.tools);
         }

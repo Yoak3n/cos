@@ -14,6 +14,7 @@ fn adapter(port: u16) -> OpencodeAdapter {
         api_key: "test-key".into(),
         model: "deepseek-v4-flash-free".into(),
         streaming: true,
+        max_tokens: Some(2048),
         input_content: vec![InputContent::Text],
     })
 }
