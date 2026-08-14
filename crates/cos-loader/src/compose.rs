@@ -1,15 +1,48 @@
-//! 组合装载：工厂解析 → inject/provide 建图 → 拓扑排序 → 按序 fork + apply。
+//! 组合装载：工厂解析（静态表 + dlopen source）→ inject/provide 建图 → 拓扑排序 →
+//! 按序 fork + apply。
 //!
 //! 依赖就绪才激活（PLAN.md §1）：无运行时替换，拓扑排序替代 dsh 的响应式重载；
 //! 环 / 缺依赖 / 重复 provide 一律装载即报错（fail loud at load，带插件名）。
+//!
+//! B 形态（P8）：yml `name` 以 `./` 或 `dlopen:` 开头 → 经 [`crate::dlopen`] 运行期
+//! 加载 cdylib（版本握手 + HostApi 桥）；其余走静态注册表。
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use cos_core::Context;
 
+use crate::dlopen::DlopenPlugin;
 use crate::error::LoadError;
 use crate::profile::{Entry, Profile};
 use crate::registry::{self, PluginRegistrar};
+
+/// 工厂引用：静态注册表或运行期 dlopen 插件。
+#[derive(Clone)]
+pub(crate) enum FactoryRef {
+    /// 静态注册表条目（A 形态）。
+    Static(&'static PluginRegistrar),
+    /// dlopen 加载的 cdylib 插件（B 形态）。
+    Dlopen(Arc<DlopenPlugin>),
+}
+
+impl FactoryRef {
+    /// 依赖的服务名（静态 = 宏声明；dlopen = 清单，P8 为空 → 无注入声明）。
+    fn inject(&self) -> &'static [&'static str] {
+        match self {
+            FactoryRef::Static(factory) => (factory.inject)(),
+            FactoryRef::Dlopen(_) => &[],
+        }
+    }
+
+    /// 提供的服务名（dlopen = 清单，P8 为空）。
+    fn provide(&self) -> &'static [&'static str] {
+        match self {
+            FactoryRef::Static(factory) => (factory.provide)(),
+            FactoryRef::Dlopen(_) => &[],
+        }
+    }
+}
 
 /// 装载结果：根上下文 + 各插件实例（按 apply 顺序）。
 pub struct LoadedApp {
@@ -25,6 +58,9 @@ pub struct LoadedPlugin {
     pub name: String,
     /// 该实例 fork 出的上下文（持有其 fiber）。
     pub context: Context,
+    /// dlopen 插件的库句柄（保持 Library 存活到实例 Drop——其注册的工具/效果
+    /// 持有指向库内代码/堆的指针；卸载顺序：先 fiber 逆序注销，再 Drop 本实例）。
+    pub(crate) dlopen: Option<Arc<DlopenPlugin>>,
 }
 
 impl std::fmt::Debug for LoadedPlugin {
@@ -32,6 +68,7 @@ impl std::fmt::Debug for LoadedPlugin {
         f.debug_struct("LoadedPlugin")
             .field("entry_id", &self.entry_id)
             .field("name", &self.name)
+            .field("dlopen", &self.dlopen.as_ref().map(|p| p.name.as_str()))
             .field("context", &"<Context>")
             .finish()
     }
@@ -81,7 +118,7 @@ pub struct PlannedEntry {
     pub name: String,
     /// 有效配置。
     pub config: serde_json::Value,
-    pub(crate) factory: &'static PluginRegistrar,
+    pub(crate) factory: FactoryRef,
 }
 
 impl PlannedEntry {
@@ -95,11 +132,27 @@ impl PlannedEntry {
     }
 }
 
+/// 工厂解析：`./` 或 `dlopen:` 前缀 → dlopen source；否则静态注册表。
+fn resolve_factory(entry: &Entry) -> Result<FactoryRef, LoadError> {
+    if entry.name.starts_with("./") || entry.name.starts_with("dlopen:") {
+        let path = entry.name.strip_prefix("dlopen:").unwrap_or(&entry.name);
+        let plugin = DlopenPlugin::load(&entry.name, path)?;
+        Ok(FactoryRef::Dlopen(plugin))
+    } else {
+        registry::resolve_factory(&entry.name)
+            .map(FactoryRef::Static)
+            .ok_or_else(|| LoadError::UnknownPlugin {
+                name: entry.name.clone(),
+                available: registry::available_plugins(),
+            })
+    }
+}
+
 /// 解析 + 拓扑排序，不 apply（`--dump-config` 与装载共用同一路径，保证输出与装载一致）。
 pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
     // 1. 解析工厂 + 重复 provide 检测。
     // resolved 只含未禁用条目（其下标即图节点下标）。
-    let mut resolved: Vec<(&Entry, &'static PluginRegistrar)> = Vec::new();
+    let mut resolved: Vec<(&Entry, FactoryRef)> = Vec::new();
     // 服务名 → 首个提供者节点下标。
     let mut provider: HashMap<&'static str, usize> = HashMap::new();
 
@@ -107,12 +160,8 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
         if entry.disabled {
             continue;
         }
-        let factory =
-            registry::resolve_factory(&entry.name).ok_or_else(|| LoadError::UnknownPlugin {
-                name: entry.name.clone(),
-                available: registry::available_plugins(),
-            })?;
-        for service in (factory.provide)() {
+        let factory = resolve_factory(entry)?;
+        for service in factory.provide() {
             if let Some(previous) = provider.get(service) {
                 return Err(LoadError::DuplicateProvide {
                     service: (*service).to_string(),
@@ -132,8 +181,8 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
     let mut deps: Vec<Vec<usize>> = Vec::with_capacity(node_count);
     for (entry_index, (entry, factory)) in resolved.iter().enumerate() {
         let mut required: Vec<&str> =
-            Vec::with_capacity((factory.inject)().len() + entry.inject.len());
-        required.extend((factory.inject)().iter().copied());
+            Vec::with_capacity(factory.inject().len() + entry.inject.len());
+        required.extend(factory.inject().iter().copied());
         required.extend(entry.inject.iter().map(String::as_str));
 
         let mut node_deps = Vec::new();
@@ -186,12 +235,12 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
     Ok(order
         .into_iter()
         .map(|index| {
-            let (entry, factory) = resolved[index];
+            let (entry, factory) = &resolved[index];
             PlannedEntry {
                 entry_id: entry.id().to_string(),
                 name: entry.name.clone(),
                 config: entry.config.clone(),
-                factory,
+                factory: factory.clone(),
             }
         })
         .collect())
@@ -211,11 +260,17 @@ pub fn load(root: &Context, profile: &Profile) -> Result<LoadedApp, LoadError> {
     let mut instances = Vec::with_capacity(plan.len());
     for entry in plan {
         let context = root.fork();
-        (entry.factory.apply)(&context, &entry.entry_id, entry.config.clone())?;
+        apply_entry(&entry, &context)?;
+        // dlopen 库句柄随实例存活（工具/效果持有库内指针；卸载顺序见 LoadedPlugin 文档）
+        let dlopen = match &entry.factory {
+            FactoryRef::Dlopen(plugin) => Some(plugin.clone()),
+            FactoryRef::Static(_) => None,
+        };
         instances.push(LoadedPlugin {
             entry_id: entry.entry_id,
             name: entry.name,
             context,
+            dlopen,
         });
     }
 
@@ -223,4 +278,14 @@ pub fn load(root: &Context, profile: &Profile) -> Result<LoadedApp, LoadError> {
         root: root.clone(),
         instances,
     })
+}
+
+/// 分发 apply：静态（serde 配置 → 校验 → apply）或 dlopen（HostApi 桥）。
+fn apply_entry(entry: &PlannedEntry, context: &Context) -> Result<(), LoadError> {
+    match &entry.factory {
+        FactoryRef::Static(factory) => {
+            (factory.apply)(context, &entry.entry_id, entry.config.clone())
+        }
+        FactoryRef::Dlopen(plugin) => plugin.apply(context, &entry.entry_id, entry.config.clone()),
+    }
 }

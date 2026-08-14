@@ -94,15 +94,33 @@ B 形态插件随 cdylib 交付清单 JSON（`PluginManifest`，cos_contract 定
 - **"小而窄"**：接缝方法参数/返回值均为标量或上述 JSON 类型；无公开泛型方法（泛型只出现在
   服务注册表内部，如 `provide<T: Service>`，不跨边界）
 
-## 10. P8 试点映射（薄壳 cdylib）
+## 10. P8 试点（已落地）
 
-1. loader 新增 `DlopenPluginSource`（libloading）：`resolve_factory(name)` 先查静态表；
-   `./` 前缀或 `dlopen:` 前缀 → dlopen 路径（装载、版本握手、apply）
-2. 薄壳验证：把 plugin-todo 静态实现包一层 cdylib——导出
-   `cos_plugin_abi_version` / `cos_plugin_apply`，apply 内部转发到 `TodoPlugin::default().apply`；
-   证明 FFI 通路 + 版本协商 + 能力裁剪
-3. yml 装载：`- name: ./plugins/todo_v1.dll` 行为与静态版一致；版本不匹配 → 启动拒绝
-   （可读错误）；`get_state` 类调试面可查装载来源
+状态：**完成**（commit 后）。实现：
+
+1. **HostApi 0.2.0**：表尾追加 `register_tool`（工具注册能力：ToolRun JSON → C 回调 →
+   ToolOutcome JSON 写宿主缓冲）；`cos_plugin_apply` 增加 `ctx` 参数（插件后续
+   调用 host 函数时回传）
+2. **`cos-loader::dlopen`**（DlopenPluginSource）：`resolve_factory` 之外的新路径——
+   yml `name` 以 `./` 或 `dlopen:` 开头 → libloading 加载 → `cos_plugin_abi_version`
+   握手（不兼容 fail loud，可读错误）→ `cos_plugin_apply(host, ctx, config, err_buf, err_len)`
+3. **HostApi 桥**（loader 实现）：`get_service` 恒空指针（P8 未桥接）、`emit`/`on`
+   （JSON 载荷事件 `PluginEvent`；非 JSON 载荷不可见）、`register_effect`（fiber 效果，
+   卸载逆序调 disposer）、`free`（P8 空操作，句柄随 fiber 回收）、`register_tool`
+4. **薄壳 `plugins/plugin-todo-dlopen`**（cdylib）：导出两个入口；apply 时注册
+   todo_write 工具（C 回调执行：解析 ToolRun → 更新状态 → 回写 ToolOutcome）、
+   注册效果（释放状态 + 写 marker 文件验证卸载链）、emit 事件验证桥
+5. **装载集成**：`compose::plan/load` 支持 `FactoryRef::Static | Dlopen`；
+   `LoadedPlugin` 持有 dlopen 库句柄（**Library 存活到实例 Drop**——注册的工具/效果
+   持有库内指针，先 fiber 逆序注销再卸载库，顺序已钉死）
+
+P8 简化（记录在案）：能力不按 inject 裁剪（所有 dlopen 插件获得同一能力集，裁剪留 P9）；
+事件名跨边界泄漏（`&'static str` 契约）；`free` 空操作；dlopen 插件的清单（inject/provide）
+暂为空（拓扑排序按 entry 自身声明）。
+
+验证（`tests/dlopen_e2e.rs`）：`- name: ./target/debug/plugin_todo_dlopen.dll` 装载 →
+demo 模式 mock LLM 调用 todo_write → dlopen 工具经 C 回调执行 → 结果
+（"已写入 1 条任务"）回流会话日志 → 不变量全过 → 卸载逆序 → disposer 写 marker。
 
 ## 11. 安全边界（P9 前不做）
 

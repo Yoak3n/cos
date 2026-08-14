@@ -17,7 +17,7 @@ pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 兼容规则：major 相同且插件 minor ≤ 宿主 minor 即兼容（见 [`ContractVersion::compatible_with`]）。
 pub const API_VERSION: ContractVersion = ContractVersion {
     major: 0,
-    minor: 1,
+    minor: 2,
     patch: 0,
 };
 
@@ -113,7 +113,26 @@ pub struct HostApi {
     ) -> Handle,
     /// 释放宿主资源句柄（on / register_effect 的返回值）。
     pub free: unsafe extern "C" fn(ctx: HostCtx, handle: Handle),
+    /// 注册工具（0.2.0 追加；P8 试点能力——todo 薄壳经此提供 todo_write）。
+    /// 执行时宿主把 ToolRun 序列化为 JSON 调 `execute`，
+    /// 插件把 ToolOutcome JSON 写入 `result_buf`（宿主分配，NUL 结尾）。
+    pub register_tool: unsafe extern "C" fn(
+        ctx: HostCtx,
+        name: *const std::ffi::c_char,
+        description: *const std::ffi::c_char,
+        parameters_json: *const std::ffi::c_char,
+        execute: ToolExecute,
+        userdata: *mut std::ffi::c_void,
+    ) -> Handle,
 }
+
+/// 工具执行回调（register_tool 的 execute；`run_json`/`result_buf` 仅在调用期间有效）。
+pub type ToolExecute = unsafe extern "C" fn(
+    userdata: *mut std::ffi::c_void,
+    run_json: *const std::ffi::c_char,
+    result_buf: *mut std::ffi::c_char,
+    result_len: usize,
+) -> i32;
 
 // ---------------------------------------------------------------------------
 // 插件导出入口（cdylib 必须导出）
@@ -130,8 +149,10 @@ pub const PLUGIN_ENTRY_VALIDATE: &str = "cos_plugin_validate";
 pub type PluginAbiVersion = unsafe extern "C" fn() -> u32;
 
 /// `cos_plugin_apply` 的函数签名。
+/// `ctx`（HostCtx）在 apply 期间有效；插件后续调用 HostApi 函数时原样回传。
 pub type PluginApply = unsafe extern "C" fn(
     host: *const HostApi,
+    ctx: HostCtx,
     config_json: *const std::ffi::c_char,
     error_buf: ErrorBuf,
     error_len: usize,

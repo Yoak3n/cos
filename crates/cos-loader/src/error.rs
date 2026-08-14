@@ -75,6 +75,46 @@ pub enum LoadError {
         #[source]
         source: CoreError,
     },
+    /// dlopen 插件：库文件打开失败。
+    #[error("dlopen 插件 '{name}' 打开失败（{path}）: {detail}")]
+    DlopenOpen {
+        /// 工厂名。
+        name: String,
+        /// 库文件路径。
+        path: String,
+        /// libloading 错误。
+        detail: String,
+    },
+    /// dlopen 插件：导出符号缺失。
+    #[error("dlopen 插件 '{name}' 缺少导出符号 '{symbol}': {detail}")]
+    DlopenSymbol {
+        /// 工厂名。
+        name: String,
+        /// 缺失的符号。
+        symbol: String,
+        /// libloading 错误。
+        detail: String,
+    },
+    /// dlopen 插件：B-ABI 版本不匹配（fail loud）。
+    #[error("dlopen 插件 '{name}' ABI 版本不兼容（宿主 {host:?}, 插件 {plugin:?}）")]
+    AbiMismatch {
+        /// 工厂名。
+        name: String,
+        /// 宿主 B-ABI 版本。
+        host: cos_contract::ContractVersion,
+        /// 插件声明的 B-ABI 版本。
+        plugin: cos_contract::ContractVersion,
+    },
+    /// dlopen 插件：apply 返回错误码。
+    #[error("dlopen 插件 '{name}' apply 失败（code={code}）: {message}")]
+    DlopenApply {
+        /// 工厂名。
+        name: String,
+        /// 插件返回的错误码。
+        code: i32,
+        /// 插件写入的错误文本。
+        message: String,
+    },
     /// 其他失败。
     #[error("{0}")]
     Other(String),

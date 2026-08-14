@@ -1,0 +1,15 @@
+[package]
+name = "plugin-todo-dlopen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "B 形态薄壳试点（P8）：plugin-todo 的独立 cdylib——验证 FFI 装载/版本握手/工具桥/效果卸载"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cos-contract = { path = "../../crates/cos-contract" }
+cos-tools = { path = "../../crates/cos-tools" }
+serde.workspace = true
+serde_json.workspace = true
