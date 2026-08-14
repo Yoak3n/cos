@@ -99,27 +99,112 @@ where
                 continue;
             }
         };
-        let command = request
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let response = dispatch(&command, &request, assembled, &next_id);
+        let Some(command) = Command::parse(&request) else {
+            // 未知命令：回显原始 type 字符串（协议兼容失败响应）
+            let unknown = request
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            write_line(
+                &writer,
+                &json!({
+                    "id": request.get("id").cloned(),
+                    "type": "response",
+                    "command": unknown,
+                    "success": false,
+                    "error": format!("未知命令: {unknown}"),
+                }),
+            )
+            .await?;
+            continue;
+        };
+        let response = dispatch(command, &request, assembled, &next_id);
         write_line(&writer, &response).await?;
-        if command == "exit" {
+        if command == Command::Exit {
             return Ok(());
         }
     }
 }
 
+/// RPC 命令（`type` 字段的强类型化；`parse` 之外的字符串一律视为未知命令，
+/// 杜绝手写字符串拼错导致静默分发错误）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    /// 发送用户消息（异步接受；处理中须带 streamingBehavior）。
+    Prompt,
+    /// 排队 steering 消息。
+    Steer,
+    /// 排队后续消息。
+    FollowUp,
+    /// 取消队列中指定 id 的待处理消息（cos 扩展）。
+    CancelMessage,
+    /// 中止当前操作（保留排队）。
+    Abort,
+    /// 会话状态。
+    GetState,
+    /// 模型可见消息历史。
+    GetMessages,
+    /// 最后一条助手文本。
+    GetLastAssistantText,
+    /// 会话统计。
+    GetSessionStats,
+    /// 命令清单。
+    GetCommands,
+    /// 退出（cos 扩展）。
+    Exit,
+}
+
+impl Command {
+    /// 从请求的 `type` 字段解析；未知 → None。
+    fn parse(request: &Value) -> Option<Command> {
+        match request.get("type").and_then(Value::as_str) {
+            Some("prompt") => Some(Command::Prompt),
+            Some("steer") => Some(Command::Steer),
+            Some("follow_up") => Some(Command::FollowUp),
+            Some("cancel_message") => Some(Command::CancelMessage),
+            Some("abort") => Some(Command::Abort),
+            Some("get_state") => Some(Command::GetState),
+            Some("get_messages") => Some(Command::GetMessages),
+            Some("get_last_assistant_text") => Some(Command::GetLastAssistantText),
+            Some("get_session_stats") => Some(Command::GetSessionStats),
+            Some("get_commands") => Some(Command::GetCommands),
+            Some("exit") => Some(Command::Exit),
+            _ => None,
+        }
+    }
+
+    /// wire 名称（响应 `command` 字段回显）。
+    fn name(self) -> &'static str {
+        match self {
+            Command::Prompt => "prompt",
+            Command::Steer => "steer",
+            Command::FollowUp => "follow_up",
+            Command::CancelMessage => "cancel_message",
+            Command::Abort => "abort",
+            Command::GetState => "get_state",
+            Command::GetMessages => "get_messages",
+            Command::GetLastAssistantText => "get_last_assistant_text",
+            Command::GetSessionStats => "get_session_stats",
+            Command::GetCommands => "get_commands",
+            Command::Exit => "exit",
+        }
+    }
+}
+
 /// 命令分发：pi 响应信封（`type: response` + `command` + `success` + `data?`/`error?`）。
-fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &AtomicU64) -> Value {
+fn dispatch(
+    command: Command,
+    request: &Value,
+    assembled: &Assembled,
+    next_id: &AtomicU64,
+) -> Value {
     let id = request.get("id").cloned();
     let respond = |success: bool, data: Option<Value>, error: Option<String>| {
         let mut value = json!({
             "id": id,
             "type": "response",
-            "command": command,
+            "command": command.name(),
             "success": success,
         });
         if let Some(data) = data {
@@ -132,7 +217,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
     };
     let agent = &assembled.agent;
     match command {
-        "prompt" => {
+        Command::Prompt => {
             let message = request
                 .get("message")
                 .and_then(Value::as_str)
@@ -172,7 +257,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
             }
             respond(true, Some(json!({"messageId": message_id})), None)
         }
-        "steer" => {
+        Command::Steer => {
             let message = request
                 .get("message")
                 .and_then(Value::as_str)
@@ -192,7 +277,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
             agent.steer(user_message(request, &message_id));
             respond(true, Some(json!({"messageId": message_id})), None)
         }
-        "follow_up" => {
+        Command::FollowUp => {
             let message = request
                 .get("message")
                 .and_then(Value::as_str)
@@ -212,7 +297,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
             agent.followup(user_message(request, &message_id));
             respond(true, Some(json!({"messageId": message_id})), None)
         }
-        "cancel_message" => {
+        Command::CancelMessage => {
             // cos 扩展：取消队列中指定 id 的待处理消息（已开始处理的无法取消）
             let message_id = request
                 .get("messageId")
@@ -231,12 +316,12 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 )
             }
         }
-        "abort" => {
+        Command::Abort => {
             // pi 语义：中止当前操作、保留已排队消息
             agent.cancel(cos_session::AbortCause::User, true);
             respond(true, None, None)
         }
-        "get_state" => {
+        Command::GetState => {
             let session = agent.session();
             respond(
                 true,
@@ -250,7 +335,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 None,
             )
         }
-        "get_messages" => {
+        Command::GetMessages => {
             let messages: Vec<Value> = agent
                 .session()
                 .derive_messages()
@@ -259,7 +344,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 .collect();
             respond(true, Some(json!({"messages": messages})), None)
         }
-        "get_last_assistant_text" => {
+        Command::GetLastAssistantText => {
             let text = agent
                 .session()
                 .events()
@@ -274,7 +359,7 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 });
             respond(true, Some(json!({"text": text})), None)
         }
-        "get_session_stats" => {
+        Command::GetSessionStats => {
             let session = agent.session();
             let mut user_messages = 0u64;
             let mut assistant_messages = 0u64;
@@ -315,9 +400,8 @@ fn dispatch(command: &str, request: &Value, assembled: &Assembled, next_id: &Ato
                 None,
             )
         }
-        "get_commands" => respond(true, Some(json!({"commands": []})), None),
-        "exit" => respond(true, None, None),
-        _ => respond(false, None, Some(format!("未知命令: {command}"))),
+        Command::GetCommands => respond(true, Some(json!({"commands": []})), None),
+        Command::Exit => respond(true, None, None),
     }
 }
 
@@ -614,7 +698,7 @@ mod tests {
     use cos_session::SessionEventData;
     use serde_json::{Value, json};
 
-    use super::dispatch;
+    use super::{Command, dispatch};
     use crate::{RunConfig, assemble};
 
     fn base_config() -> RunConfig {
@@ -637,12 +721,8 @@ mod tests {
         let assembled = assemble(&base_config()).await.unwrap();
         let next_id = AtomicU64::new(0);
         let cmd = |value: Value| {
-            dispatch(
-                value["type"].as_str().unwrap(),
-                &value,
-                &assembled,
-                &next_id,
-            )
+            let command = Command::parse(&value).expect("测试命令应可解析");
+            dispatch(command, &value, &assembled, &next_id)
         };
 
         // 第一条（idle → 立即处理，但驱动器未调度，仍在队列）
