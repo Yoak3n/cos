@@ -1,9 +1,8 @@
-# cos 陪伴演示清单（M2）：todo + bash + demo + memory。
+# cos 陪伴演示清单（M2）：todo + bash + memory。
 # 记忆插件在 agent/pre-step 消化上一 turn、在 agent/request 注入主动 recall + 关系卡。
 # 真实 LLM 用 --llm-* 参数或 COS_LLM_* 环境变量启用；缺省为确定性 mock。
 - name: todo
 - name: bash
-- name: demo
 - name: memory
   config:
     db_path: sessions/memory.db

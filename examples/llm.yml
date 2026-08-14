@@ -29,7 +29,6 @@
         providers: [opencode-go, zen-free]
 - name: todo
 - name: bash
-- name: demo
 - name: memory
   config:
     db_path: sessions/memory.db

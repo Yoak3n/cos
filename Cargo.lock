@@ -83,7 +83,6 @@ dependencies = [
  "cos-tools",
  "futures",
  "plugin-bash",
- "plugin-demo",
  "plugin-llm",
  "plugin-memory",
  "plugin-todo",
@@ -845,20 +844,6 @@ dependencies = [
  "cos-loader",
  "cos-session",
  "cos-shell",
- "cos-tools",
- "futures",
- "inventory",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "plugin-demo"
-version = "0.1.0"
-dependencies = [
- "cos-core",
- "cos-loader",
- "cos-session",
  "cos-tools",
  "futures",
  "inventory",

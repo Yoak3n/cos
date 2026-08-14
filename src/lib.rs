@@ -120,11 +120,10 @@ fn demo_script() -> Vec<MockReply> {
 
 /// 内置插件的插件 id —— 同时是对插件 crate 的显式引用锚点：
 /// 保证其 inventory 静态注册表被链接进 cos 可执行文件。
-pub fn builtin_plugin_ids() -> [&'static str; 5] {
+pub fn builtin_plugin_ids() -> [&'static str; 4] {
     [
         plugin_todo::TodoPlugin::ID,
         plugin_bash::BashPlugin::ID,
-        plugin_demo::DemoPlugin::ID,
         plugin_memory::MemoryPlugin::ID,
         plugin_llm::LlmPlugin::ID,
     ]

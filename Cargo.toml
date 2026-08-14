@@ -20,7 +20,6 @@ cos-shell = { path = "crates/cos-shell" }
 cos-system-prompt = { path = "crates/cos-system-prompt" }
 cos-tools = { path = "crates/cos-tools" }
 plugin-bash = { path = "plugins/plugin-bash" }
-plugin-demo = { path = "plugins/plugin-demo" }
 plugin-llm = { path = "plugins/plugin-llm" }
 plugin-memory = { path = "plugins/plugin-memory" }
 plugin-todo = { path = "plugins/plugin-todo" }

@@ -76,7 +76,7 @@ async fn demo_end_to_end_snapshot_invariants_replay_unload() {
     assert!(report.violations.is_empty(), "{:?}", report.violations);
 
     // 4. 卸载顺序：apply 逆序（审计）
-    assert_eq!(report.unload_order, vec!["demo", "bash", "todo"]);
+    assert_eq!(report.unload_order, vec!["bash", "todo"]);
     assert!(report.services_after_unload, "todo 服务应已随卸载反注册");
 
     // 5. JSONL 落盘（重放一致性已由 run 内部校验；行数 = header + 23 事件）
@@ -93,13 +93,13 @@ async fn dump_config_matches_loaded_order() {
     let dump: serde_json::Value =
         serde_json::from_str(report.dump.as_deref().expect("dump 输出")).unwrap();
     let entries = dump.as_array().expect("计划应为数组");
-    assert_eq!(entries.len(), 3);
+    assert_eq!(entries.len(), 2);
     let names: Vec<&str> = entries
         .iter()
         .map(|entry| entry["name"].as_str().unwrap())
         .collect();
     // 与装载顺序一致（demo.yml 无依赖 → 清单序即拓扑序）
-    assert_eq!(names, vec!["todo", "bash", "demo"]);
+    assert_eq!(names, vec!["todo", "bash"]);
     assert_eq!(entries[0]["id"], "todo"); // id 缺省 = name
     assert_eq!(entries[0]["config"], serde_json::Value::Null);
 }

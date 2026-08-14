@@ -11,7 +11,7 @@ Rust 再实现插件化主干："一切皆插件" —— Context 服务仓库、
 
 ```text
 crates/   # 核心与接缝 crate（cos-core、cos-loader、cos-session、cos-llm、cos-llm-opencode、cos-memory、…）
-plugins/  # A 形态插件（plugin-todo、plugin-bash、plugin-demo、plugin-memory）
+plugins/  # A 形态插件（plugin-todo、plugin-bash、plugin-llm、plugin-memory）
 src/      # cos CLI 宿主（P6 前为占位二进制）
 ```
 

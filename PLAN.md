@@ -56,7 +56,8 @@ cos/  (Cargo workspace)
 ├── plugins/               # A 形态插件 = workspace crate（独立 crate 才证明接缝纪律）
 │   ├── plugin-todo/       # todo_write
 │   ├── plugin-bash/       # bash 工具
-│   └── plugin-demo/       # echo 类演示工具（供 e2e）
+│   ├── plugin-llm/        # LLM 提供商统一管理（providers/chains）
+│   └── plugin-memory/     # 关系层记忆（M1–M3）
 └── app/                   # cos 可执行：读 profile/cordis.yml → 启动
 ```
 
