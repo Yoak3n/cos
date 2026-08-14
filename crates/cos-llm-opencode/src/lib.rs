@@ -9,7 +9,9 @@
 //! `data: [DONE]` 收束）；若流式在**未产出任何 chunk 前**失败于服务端（HTTP 5xx /
 //! `{"type":"error",…}` 块），自动退化为非流式单次请求（`choices[0].message.content` +
 //! usage 合成一个 chunk）——兼容流式暂不可用的网关（实测 opencode zen/go 流式不稳定）。
-//! 4xx（鉴权/余额）不重试，原样报错。推理模型只流 `reasoning_content` 时兜底输出思考文本。
+//! 4xx（鉴权/余额）不重试，原样报错。工具调用：流式按 `index` 累积 `delta.tool_calls`
+//! 分片、流尾合成 [`ToolCall`]；非流式直接解析 `message.tool_calls`。推理模型只流
+//! `reasoning_content` 时兜底输出思考文本（有工具调用时不兜底思考）。
 //!
 //! LLM 统一管理：本 crate 经 `llm_factory!("opencode", build_opencode)` 注册提供商工厂。
 
@@ -18,8 +20,8 @@
 use std::sync::Arc;
 
 use cos_llm::{
-    ChunkDelta, InputContent, LlmAdapter, LlmError, LlmRequest, LlmStream, Message, StreamChunk,
-    TokenUsage,
+    ChunkDelta, ContentBlock, InputContent, LlmAdapter, LlmError, LlmRequest, LlmStream, Message,
+    StreamChunk, TokenUsage, ToolCall,
 };
 use futures::StreamExt;
 use serde::Deserialize;
@@ -34,7 +36,7 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
         model: String,
         #[serde(default = "default_streaming")]
         streaming: bool,
-        /// 输出预算（缺省 2048；推理模型无预算会把输出全花在 reasoning 上、content 出不来）。
+        /// 输出预算（缺省 4096；推理模型无预算会把输出全花在 reasoning 上、content 出不来）。
         #[serde(default = "default_max_tokens")]
         max_tokens: Option<u32>,
         /// 可输入内容标注（缺省 text；视觉模型声明 image）。
@@ -46,7 +48,8 @@ pub fn build_opencode(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>,
         false
     }
     fn default_max_tokens() -> Option<u32> {
-        Some(2048)
+        // 推理模型思考会吃掉预算：2048 太小（思考 + 正文可能截断成空 content），给到 4096
+        Some(4096)
     }
     let config: ProviderConfig = serde_json::from_value(config.clone())
         .map_err(|error| LlmError::Failure(format!("opencode 提供商配置无效: {error}")))?;
@@ -117,6 +120,29 @@ struct SseDelta {
     /// 推理模型（deepseek 等）把思考文本放这里；content 缺失时兜底。
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// 工具调用增量（流式按 `index` 分片到达，`arguments` 为片段）。
+    #[serde(default)]
+    tool_calls: Vec<SseToolCall>,
+}
+
+/// OpenAI 工具调用（流式与非流式共用；流式时 `index` 用于分片归组）。
+#[derive(Deserialize, Default)]
+struct SseToolCall {
+    #[serde(default)]
+    index: Option<usize>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: SseToolFunction,
+}
+
+/// 工具函数（名称 + 参数字符串）。
+#[derive(Deserialize, Default)]
+struct SseToolFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 /// 非流式响应（OpenAI chat.completion）。
@@ -134,13 +160,15 @@ struct CompletionChoice {
     message: CompletionMessage,
 }
 
-/// 非流式 message（content 为 null 时兜底 reasoning_content）。
+/// 非流式 message（content 为 null 时兜底 reasoning_content；工具调用独立解析）。
 #[derive(Deserialize)]
 struct CompletionMessage {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
     reasoning_content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<SseToolCall>,
 }
 
 /// usage 块（流式与非流式共用）。
@@ -204,7 +232,31 @@ impl OpencodeAdapter {
                     }
                 }
                 Message::Assistant(assistant) => {
-                    serde_json::json!({ "role": "assistant", "content": assistant.text() })
+                    // 工具调用轮：assistant 历史必须带 tool_calls（OpenAI 协议，
+                    // 否则后续 tool 结果消息会被网关拒绝/丢失）
+                    let tool_calls: Vec<serde_json::Value> = assistant
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { call } => Some(serde_json::json!({
+                                "id": call.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": call.arguments,
+                                },
+                            })),
+                            ContentBlock::Text { .. } => None,
+                        })
+                        .collect();
+                    let mut value = serde_json::json!({
+                        "role": "assistant",
+                        "content": assistant.text(),
+                    });
+                    if !tool_calls.is_empty() {
+                        value["tool_calls"] = serde_json::json!(tool_calls);
+                    }
+                    value
                 }
                 Message::Tool(tool) => {
                     serde_json::json!({ "role": "tool", "content": tool.content })
@@ -358,6 +410,10 @@ async fn stream_once(
     // 推理文本缓冲：content 一出现即丢弃；仅当全程无 content 才在流尾回退输出
     let mut reasoning_buf = String::new();
     let mut saw_content = false;
+    // 工具调用分片：按 index 归组（id/name 取首个片段，arguments 拼接）
+    let mut tool_acc: Vec<Option<(String, String, String)>> = Vec::new();
+    // 最后见到的 usage（流尾工具块携带）
+    let mut usage_tail: Option<TokenUsage> = None;
     while !finished {
         if let Some(pos) = buffer.find('\n') {
             // 逐行消费 SSE；error 体可能不带 `data:` 前缀（裸 JSON）
@@ -395,11 +451,35 @@ async fn stream_once(
                 if let Some(thought) = &choice.delta.reasoning_content {
                     reasoning.push_str(thought);
                 }
+                for call in &choice.delta.tool_calls {
+                    let index = call.index.unwrap_or(0);
+                    while tool_acc.len() <= index {
+                        tool_acc.push(None);
+                    }
+                    let slot = tool_acc[index]
+                        .get_or_insert_with(|| (String::new(), String::new(), String::new()));
+                    if let Some(id) = &call.id
+                        && slot.0.is_empty()
+                    {
+                        slot.0.push_str(id);
+                    }
+                    if let Some(name) = &call.function.name
+                        && slot.1.is_empty()
+                    {
+                        slot.1.push_str(name);
+                    }
+                    if let Some(arguments) = &call.function.arguments {
+                        slot.2.push_str(arguments);
+                    }
+                }
             }
             let usage = chunk.usage.map(|usage| TokenUsage {
                 input_tokens: usage.prompt_tokens,
                 output_tokens: usage.completion_tokens,
             });
+            if usage.is_some() {
+                usage_tail = usage;
+            }
             *sent += 1;
             if text.is_empty() {
                 // 纯推理增量：缓冲；usage 独立成块（消费方跳过空文本）
@@ -449,8 +529,30 @@ async fn stream_once(
             }
         }
     }
-    // 流尾：全程无 content → 回退输出缓冲的推理（宁可说出思考，不可空回复）
-    if !saw_content && !reasoning_buf.is_empty() {
+    // 流尾：工具调用分片 → 合成 ToolUse 块（先于思考兜底判定）
+    let tools: Vec<ToolCall> = tool_acc
+        .into_iter()
+        .flatten()
+        .filter(|(_, name, arguments)| !name.is_empty() || !arguments.is_empty())
+        .map(|(call_id, name, arguments)| ToolCall {
+            call_id,
+            name,
+            arguments,
+        })
+        .collect();
+    for (i, call) in tools.iter().enumerate() {
+        *sent += 1;
+        let _ = tx.send(Ok(StreamChunk {
+            delta: ChunkDelta::ToolUse { call: call.clone() },
+            usage: if i + 1 == tools.len() {
+                usage_tail
+            } else {
+                None
+            },
+        }));
+    }
+    // 流尾：全程无 content 且无工具调用 → 回退输出缓冲的推理（宁可说出思考，不可空回复）
+    if !saw_content && tools.is_empty() && !reasoning_buf.is_empty() {
         *sent += 1;
         let _ = tx.send(Ok(StreamChunk {
             delta: ChunkDelta::Text {
@@ -480,24 +582,40 @@ async fn single_shot(
     let raw = response.text().await.map_err(|error| error.to_string())?;
     let completion: Completion =
         serde_json::from_str(&raw).map_err(|error| format!("非流式响应不是合法 JSON: {error}"))?;
+    // 逐 choice 收集：文本块 + 工具调用块（工具调用优先于思考兜底）
     let mut text = String::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut usage = None;
     for choice in &completion.choices {
-        // content 优先（空串视同缺失）；推理模型可能把文本放在 reasoning_content
+        for call in &choice.message.tool_calls {
+            let name = call.function.name.clone().unwrap_or_default();
+            let arguments = call.function.arguments.clone().unwrap_or_default();
+            if name.is_empty() && arguments.is_empty() {
+                continue;
+            }
+            tool_calls.push(ToolCall {
+                call_id: call.id.clone().unwrap_or_default(),
+                name,
+                arguments,
+            });
+        }
+        // content 优先（空串视同缺失）；无内容且无工具调用时，推理模型可能把文本放在 reasoning_content
         let content = choice
             .message
             .content
             .as_deref()
             .filter(|c| !c.trim().is_empty());
-        let reasoning = choice
-            .message
-            .reasoning_content
-            .as_deref()
-            .filter(|c| !c.trim().is_empty());
-        match (content, reasoning) {
-            (Some(content), _) => text.push_str(content),
-            (None, Some(reasoning)) => text.push_str(reasoning),
-            (None, None) => {}
+        if let Some(content) = content {
+            text.push_str(content);
+        } else if tool_calls.is_empty() {
+            let reasoning = choice
+                .message
+                .reasoning_content
+                .as_deref()
+                .filter(|c| !c.trim().is_empty());
+            if let Some(reasoning) = reasoning {
+                text.push_str(reasoning);
+            }
         }
     }
     if let Some(u) = completion.usage {
@@ -506,10 +624,28 @@ async fn single_shot(
             output_tokens: u.completion_tokens,
         });
     }
-    let _ = tx.send(Ok(StreamChunk {
-        delta: ChunkDelta::Text { text },
-        usage,
-    }));
+    let mut chunks: Vec<Result<StreamChunk, LlmError>> = Vec::new();
+    if !text.is_empty() {
+        chunks.push(Ok(StreamChunk {
+            delta: ChunkDelta::Text { text },
+            usage: if tool_calls.is_empty() { usage } else { None },
+        }));
+    }
+    for (i, call) in tool_calls.iter().enumerate() {
+        chunks.push(Ok(StreamChunk {
+            delta: ChunkDelta::ToolUse { call: call.clone() },
+            usage: if i + 1 == tool_calls.len() {
+                usage
+            } else {
+                None
+            },
+        }));
+    }
+    for chunk in chunks {
+        if tx.send(chunk).is_err() {
+            return Ok(()); // 接收方已丢弃（提前取消）
+        }
+    }
     Ok(())
 }
 

@@ -2,7 +2,10 @@
 //! 流式文本增量 + usage 映射 + [DONE] 收束；服务端失败（5xx / error 块）在无产出时
 //! 自动非流式兜底；4xx 不重试原样报错。
 
-use cos_llm::{ChunkDelta, InputContent, LlmAdapter, LlmRequest, Message, TokenUsage, UserMessage};
+use cos_llm::{
+    AssistantMessage, ChunkDelta, ContentBlock, InputContent, LlmAdapter, LlmRequest, Message,
+    TokenUsage, ToolCall, ToolResultMessage, UserMessage,
+};
 use cos_llm_opencode::{OpencodeAdapter, OpencodeConfig};
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,6 +17,18 @@ fn adapter(port: u16) -> OpencodeAdapter {
         api_key: "test-key".into(),
         model: "deepseek-v4-flash-free".into(),
         streaming: true,
+        max_tokens: Some(2048),
+        input_content: vec![InputContent::Text],
+    })
+}
+
+/// 非流式适配器（单次请求；zen/go 网关默认形态）。
+fn single_adapter(port: u16) -> OpencodeAdapter {
+    OpencodeAdapter::new(OpencodeConfig {
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        api_key: "test-key".into(),
+        model: "deepseek-v4-flash-free".into(),
+        streaming: false,
         max_tokens: Some(2048),
         input_content: vec![InputContent::Text],
     })
@@ -335,4 +350,138 @@ async fn image_message_maps_to_image_url_parts() {
     // 能力标注：纯文本适配器缺省只声明 text
     assert!(adapter.input_content().contains(&InputContent::Text));
     assert!(!adapter.input_content().contains(&InputContent::Image));
+}
+
+/// 非流式响应带工具调用（content 空 + tool_calls —— zen/go 推理模型实测形态）
+/// → 解析为 ToolUse 块（而不是把思考/空串当回复）。
+#[tokio::test]
+async fn non_streaming_tool_call_maps_to_tool_use() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+             {\"id\":\"c1\",\"object\":\"chat.completion\",\"model\":\"deepseek-v4-flash-free\",\
+             \"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\
+             \"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\
+             \"function\":{\"name\":\"recall\",\"arguments\":\"{\\\"query\\\":\\\"咖啡\\\"}\"}}]}}],\
+             \"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4}}",
+        ],
+    ));
+
+    let adapter = single_adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut calls = Vec::new();
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        match item.unwrap().delta {
+            ChunkDelta::Text { text: delta } => text.push_str(&delta),
+            ChunkDelta::ToolUse { call } => calls.push(call),
+        }
+    }
+    server.await.unwrap();
+    assert!(text.is_empty(), "content 空 → 不应有文本（也不应回退思考）");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].call_id, "call_1");
+    assert_eq!(calls[0].name, "recall");
+    assert_eq!(calls[0].arguments, r#"{"query":"咖啡"}"#);
+}
+
+/// 流式工具调用分片（index 归组 + arguments 拼接）→ 流尾合成 ToolUse。
+#[tokio::test]
+async fn streaming_tool_call_fragments_are_assembled() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\
+             \"type\":\"function\",\"function\":{\"name\":\"inventory\",\"arguments\":\"\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\
+             \"function\":{\"arguments\":\"{\\\"limit\\\":\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\
+             \"function\":{\"arguments\":\"3}\"}}]}}]}\n\n\
+             data: [DONE]\n\n",
+        ],
+    ));
+
+    let adapter = adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut calls = Vec::new();
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        match item.unwrap().delta {
+            ChunkDelta::Text { text: delta } => text.push_str(&delta),
+            ChunkDelta::ToolUse { call } => calls.push(call),
+        }
+    }
+    server.await.unwrap();
+    assert!(text.is_empty());
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].call_id, "call_9");
+    assert_eq!(calls[0].name, "inventory");
+    assert_eq!(calls[0].arguments, r#"{"limit":3}"#);
+}
+
+/// assistant 历史带工具调用 → 请求体必须回传 tool_calls（OpenAI 协议，工具结果轮必需）。
+#[tokio::test]
+async fn assistant_tool_history_is_sent_back_in_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 16384];
+        let n = socket.read(&mut buf).await.unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]).to_string();
+        assert!(request.contains("\"role\":\"assistant\""), "{request}");
+        assert!(
+            request.contains("\"tool_calls\""),
+            "assistant 历史应带 tool_calls: {request}"
+        );
+        assert!(request.contains("\"id\":\"call_1\""), "{request}");
+        assert!(request.contains("\"name\":\"recall\""), "{request}");
+        assert!(
+            request.contains("\"arguments\":\"{\\\"query\\\":\\\"咖啡\\\"}\""),
+            "工具参数字符串原样回传: {request}"
+        );
+        assert!(
+            request.contains("\"role\":\"tool\""),
+            "工具结果消息应在: {request}"
+        );
+        socket
+            .write_all(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+                 {\"id\":\"c\",\"object\":\"chat.completion\",\"model\":\"m\",\
+                 \"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}],\
+                 \"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}"
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.shutdown().await.unwrap();
+    });
+
+    let request = LlmRequest {
+        system: None,
+        messages: vec![
+            Message::User(UserMessage::new("查一下咖啡")),
+            Message::Assistant(AssistantMessage::new(vec![ContentBlock::ToolUse {
+                call: ToolCall {
+                    call_id: "call_1".into(),
+                    name: "recall".into(),
+                    arguments: r#"{"query":"咖啡"}"#.into(),
+                },
+            }])),
+            Message::Tool(ToolResultMessage::new("无相关记忆")),
+        ],
+        tools: vec![],
+    };
+    let adapter = single_adapter(port);
+    let mut stream = adapter.stream(&request);
+    while let Some(item) = stream.next().await {
+        assert!(item.is_ok(), "{item:?}");
+    }
+    server.await.unwrap();
 }
