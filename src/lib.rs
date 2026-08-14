@@ -12,14 +12,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use cos_agent::{Agent, AgentOptions, AgentRegistry, CreateAgentOptions};
 use cos_agent_loop::LoopFactory;
-use cos_core::{Context, Plugin};
+use cos_core::Context;
 use cos_invariants::{InvariantRegistry, register_defaults};
 use cos_llm::{
     ChunkDelta, InputContent, LlmAdapter, LlmRegistry, Message, StreamChunk, ToolCall, UserMessage,
 };
 use cos_llm_mock::{MockAdapter, MockReply};
 use cos_llm_opencode::{OpencodeAdapter, OpencodeConfig};
-use cos_loader::{self as loader, Profile};
+use cos_loader::{self as loader};
 use cos_memory::MemoryStore;
 use cos_session::{
     AbortCause, SESSION_FORMAT_VERSION, SessionEvent, SessionEventData, SessionHeader,
@@ -30,6 +30,7 @@ use cos_system_prompt::PromptSections;
 use cos_tools::ToolRegistry;
 use thiserror::Error;
 
+pub mod plugins;
 pub mod repl;
 pub mod rpc;
 
@@ -134,23 +135,6 @@ fn demo_script() -> Vec<MockReply> {
     ]
 }
 
-/// 插件 id 辅助（generic 路径：既避免 unit-struct 构造 lint，也兼容带字段的插件）。
-fn plugin_id<P: Plugin + Default>() -> &'static str {
-    P::default().id()
-}
-
-/// 内置插件的插件 id —— 同时是对插件 crate 的显式引用锚点：
-/// 保证其 inventory 静态注册表被链接进 cos 可执行文件。
-pub fn builtin_plugin_ids() -> [&'static str; 5] {
-    [
-        plugin_id::<plugin_todo::TodoPlugin>(),
-        plugin_id::<plugin_bash::BashPlugin>(),
-        plugin_id::<plugin_memory::MemoryPlugin>(),
-        plugin_id::<plugin_llm::LlmPlugin>(),
-        plugin_id::<plugin_rpc::RpcPlugin>(),
-    ]
-}
-
 /// 装配结果（REPL / RPC / 一次性共用）。
 pub struct Assembled {
     /// 根上下文（服务/事件总线）。
@@ -180,8 +164,6 @@ pub struct TurnSummary {
 
 /// 装配：内置服务 + LLM 注册表 + 插件树 + 主 agent（三种形态共用）。
 pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
-    // 锚点：保证插件 crate 的 inventory 注册表被链接
-    let _ = builtin_plugin_ids();
     let root = Context::root();
     // 内置服务（app 装配，先于插件树）
     root.provide(ToolRegistry::new(&root))?;
@@ -219,9 +201,8 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
         .expect("刚装配")
         .set_factory(Arc::new(LoopFactory))?;
 
-    let profile = Profile::load(&config.config_path)?;
-    // 装配插件树
-    let app = loader::load(&root, &profile)?;
+    // 插件树（锚定 + yml 装载，见 plugins 模块）
+    let app = plugins::load(&root, &config.config_path)?;
 
     // 主 agent：LLM 统一管理解析，优先级：
     // --agent-llm <id> > --llm-* 的 "default" > yml 的 "main"（链或提供商）>
@@ -462,9 +443,8 @@ pub async fn finish(assembled: &Assembled, config: &RunConfig) -> Result<RunRepo
 /// 一次性演示链路（`--prompt`）：装配 → 一轮 → 收尾。
 pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
     if config.dump_config {
-        let profile = Profile::load(&config.config_path)?;
         return Ok(RunReport {
-            dump: Some(loader::dump_plan(&profile)?),
+            dump: Some(plugins::plan_json(&config.config_path)?),
             unload_order: Vec::new(),
             events: Vec::new(),
             messages: Vec::new(),

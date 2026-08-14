@@ -1,0 +1,8 @@
+# B 形态 dlopen 插件示例：todo 薄壳 cdylib（P8 试点）。
+# name 以 `./` 或 `dlopen:` 开头 → 运行期 dlopen 装载（不走静态注册表）。
+# 相对路径相对进程 cwd（Windows: .dll / Linux: .so / macOS: .dylib）。
+# 构建：cargo build -p plugin-todo-dlopen
+- name: ./target/debug/plugin_todo_dlopen.dll
+  config:
+    # 可选：卸载时插件 disposer 写此文件（验证效果卸载链）
+    marker: target/dlopen-disposed.txt
