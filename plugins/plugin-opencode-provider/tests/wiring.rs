@@ -5,7 +5,7 @@ use cos_core::{Context, Plugin, Validate};
 use cos_llm::{LlmRegistry, LlmRequest, ModelDefaults};
 use cos_test_support::{ChatReply, ScriptedChatServer};
 use futures::StreamExt;
-use plugin_opencode::{
+use plugin_opencode_provider::{
     BUILTIN_MODELS, GO_BASE_URL, OPENCODE_KIND, OpencodePlugin, OpencodePluginConfig, ZEN_BASE_URL,
     catalog_with, resolve_base_url,
 };

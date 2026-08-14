@@ -19,8 +19,8 @@ use cos_core::Context;
     feature = "plugin-bash",
     feature = "plugin-memory",
     feature = "plugin-llm",
-    feature = "plugin-opencode",
-    feature = "plugin-deepseek",
+    feature = "plugin-opencode-provider",
+    feature = "plugin-deepseek-provider",
     feature = "plugin-custom-provider",
     feature = "plugin-rpc"
 ))]
@@ -34,8 +34,8 @@ use cos_loader::{self as loader, Profile};
     feature = "plugin-bash",
     feature = "plugin-memory",
     feature = "plugin-llm",
-    feature = "plugin-opencode",
-    feature = "plugin-deepseek",
+    feature = "plugin-opencode-provider",
+    feature = "plugin-deepseek-provider",
     feature = "plugin-custom-provider",
     feature = "plugin-rpc"
 ))]
@@ -58,10 +58,10 @@ pub fn builtin_plugin_ids() -> Vec<&'static str> {
         plugin_id::<plugin_memory::MemoryPlugin>(),
         #[cfg(feature = "plugin-llm")]
         plugin_id::<plugin_llm::LlmPlugin>(),
-        #[cfg(feature = "plugin-opencode")]
-        plugin_id::<plugin_opencode::OpencodePlugin>(),
-        #[cfg(feature = "plugin-deepseek")]
-        plugin_id::<plugin_deepseek::DeepseekPlugin>(),
+        #[cfg(feature = "plugin-opencode-provider")]
+        plugin_id::<plugin_opencode_provider::OpencodePlugin>(),
+        #[cfg(feature = "plugin-deepseek-provider")]
+        plugin_id::<plugin_deepseek_provider::DeepseekPlugin>(),
         #[cfg(feature = "plugin-custom-provider")]
         plugin_id::<plugin_custom_provider::CustomProviderPlugin>(),
         #[cfg(feature = "plugin-rpc")]

@@ -5,7 +5,7 @@ use cos_core::{Context, Plugin};
 use cos_llm::{LlmRegistry, LlmRequest, ModelDefaults};
 use cos_test_support::{ChatReply, ScriptedChatServer};
 use futures::StreamExt;
-use plugin_deepseek::{
+use plugin_deepseek_provider::{
     BUILTIN_MODELS, DEEPSEEK_BASE_URL, DEEPSEEK_KIND, DeepseekPlugin, DeepseekPluginConfig,
     catalog_with, resolve_base_url,
 };
@@ -45,7 +45,7 @@ fn builtin_catalog_covers_official_models() {
     assert_eq!(defaults.defaults["max_tokens"], flash.max_tokens);
     // 可用模型查询 = 目录全量
     assert_eq!(
-        plugin_deepseek::available_models(&[]),
+        plugin_deepseek_provider::available_models(&[]),
         vec![
             "deepseek-v4-flash".to_string(),
             "deepseek-v4-pro".to_string()

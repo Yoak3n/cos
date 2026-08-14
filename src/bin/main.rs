@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cos::{LlmConfig, RunConfig, assemble, finish, run};
+use cos::{schema::{LlmConfig, RunConfig}, assemble, finish, run};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {

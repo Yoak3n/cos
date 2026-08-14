@@ -21,10 +21,10 @@ cos-system-prompt = { path = "crates/cos-system-prompt", version = "0.1.0" }
 cos-tools = { path = "crates/cos-tools", version = "0.1.0" }
 plugin-bash = { path = "plugins/plugin-bash", version = "0.1.0", optional = true }
 plugin-custom-provider = { path = "plugins/plugin-custom-provider", version = "0.1.0", optional = true }
-plugin-deepseek = { path = "plugins/plugin-deepseek", version = "0.1.0", optional = true }
+plugin-deepseek-provider = { path = "plugins/plugin-deepseek-provider", version = "0.1.0", optional = true }
 plugin-llm = { path = "plugins/plugin-llm", version = "0.1.0", optional = true }
 plugin-memory = { path = "plugins/plugin-memory", version = "0.1.0", optional = true }
-plugin-opencode = { path = "plugins/plugin-opencode", version = "0.1.0", optional = true }
+plugin-opencode-provider = { path = "plugins/plugin-opencode-provider", version = "0.1.0", optional = true }
 plugin-rpc = { path = "plugins/plugin-rpc", version = "0.1.0", optional = true }
 plugin-todo = { path = "plugins/plugin-todo", version = "0.1.0", optional = true }
 futures.workspace = true
@@ -43,19 +43,19 @@ default = ["full"]
 full = [
     "plugin-bash",
     "plugin-custom-provider",
-    "plugin-deepseek",
+    "plugin-deepseek-provider",
     "plugin-llm",
     "plugin-memory",
-    "plugin-opencode",
+    "plugin-opencode-provider",
     "plugin-rpc",
     "plugin-todo",
 ]
 plugin-bash = ["dep:plugin-bash"]
 plugin-custom-provider = ["dep:plugin-custom-provider"]
-plugin-deepseek = ["dep:plugin-deepseek"]
+plugin-deepseek-provider = ["dep:plugin-deepseek-provider"]
 plugin-llm = ["dep:plugin-llm"]
 plugin-memory = ["dep:plugin-memory"]
-plugin-opencode = ["dep:plugin-opencode"]
+plugin-opencode-provider = ["dep:plugin-opencode-provider"]
 plugin-rpc = ["dep:plugin-rpc"]
 plugin-todo = ["dep:plugin-todo"]
 

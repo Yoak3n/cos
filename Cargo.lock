@@ -86,10 +86,10 @@ dependencies = [
  "inventory",
  "plugin-bash",
  "plugin-custom-provider",
- "plugin-deepseek",
+ "plugin-deepseek-provider",
  "plugin-llm",
  "plugin-memory",
- "plugin-opencode",
+ "plugin-opencode-provider",
  "plugin-rpc",
  "plugin-todo",
  "serde_json",
@@ -907,7 +907,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "plugin-deepseek"
+name = "plugin-deepseek-provider"
 version = "0.1.0"
 dependencies = [
  "cos-core",
@@ -958,7 +958,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "plugin-opencode"
+name = "plugin-opencode-provider"
 version = "0.1.0"
 dependencies = [
  "cos-core",

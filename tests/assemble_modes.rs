@@ -210,7 +210,7 @@ async fn rpc_plugin_registers_provider_when_declared() {
     let mut config = base_config(Some(
         concat!(env!("CARGO_MANIFEST_DIR"), "/examples/demo.yml").to_string(),
     ));
-    config.llm = Some(cos::LlmConfig {
+    config.llm = Some(cos::schema::LlmConfig {
         base_url: "http://127.0.0.1:1/v1".into(),
         api_key: "k".into(),
         model: "m".into(),

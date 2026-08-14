@@ -5,7 +5,7 @@
 //! opencode 适配器指向本地回环 chat/completions 服务器（cos-test-support），
 //! 以真实适配器协议离线确定性驱动（脚本：tool_use → 文本回复）。
 
-use cos::{LlmConfig, RunConfig, run};
+use cos::{schema::{LlmConfig, RunConfig}, run};
 use cos_test_support::{ChatReply, ScriptedChatServer};
 
 fn demo_config(base_url: String) -> RunConfig {
