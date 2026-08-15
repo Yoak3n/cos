@@ -24,7 +24,7 @@ cos 是一个「一切皆插件」的 Rust agent 主框架（思想借鉴 dsh / 
 ```text
 plugins/* 与 cos-agent-loop
   只依赖各接缝的 Definition crate（cos-core / cos-llm / cos-tools / cos-agent /
-  cos-shell / cos-session），不得开启 `cos-llm` 的 `openai` feature（Provider 实现，
+  cos-shell / cos-session），不得开启 `cos-llm` 的 `adapters` feature（内置适配器族，
   随 feature 引入 reqwest/tokio；只有 Provider 封装插件开它）
   或 cos-agent-loop 本身。
   例外：Provider 封装插件（plugin-opencode）的职责就是把对应 Provider crate
@@ -49,7 +49,7 @@ CI 用 `cargo deny` 之外的 crate 依赖审查由 code review 把关。
 | **cos-contract** | B 形态版本化契约 crate（地基，零运行时依赖） | B-ABI 版本协商（`ContractVersion::compatible_with`）、`HostApi` 能力函数表（`#[repr(C)]`）、插件导出入口符号、错误码、插件清单 JSON。设计见 `docs/b-abi.md` |
 | **cos-loader** | 装配器：`cordis.yml` 解析 → 工厂解析 → 拓扑排序 → 挂载 | `Profile`/`Entry`、`resolve_factory`（唯一入口）、`plugin!` 宏（inventory 静态收集）、`DlopenPlugin`（运行时 dlopen）、`dump_plan`/`--dump-config` |
 | **cos-session** | 会话日志（唯一事实源） | `SessionEvent` 封闭枚举 + `Custom` 逃生舱、`Session`（append / `derive_messages`）、JSONL 持久化（`load_jsonl`/`save_jsonl`）、`TodoItem`、`ToolError`、`TurnEndReason` |
-| **cos-llm** | LLM 接缝（Definition；`openai` feature 附带 Provider 实现） | `Role`/`Message`/`ContentBlock`（Text/Thinking/ToolUse）、`UserMessage`（含 `images`、排队 `id`）、`LlmRequest`、`StreamChunk`/`ChunkDelta`、`LlmAdapter` trait、`LlmStream`、`LlmRegistry`（服务 `"llm"`，providers/chains/后备链、`register_factory` 程序化注册）；**`openai` feature**（默认关）：OpenAI 兼容 `chat/completions` 适配器（`build_openai`/`OpenAiAdapter`，SSE 流式优先、服务端失败自动非流式兜底、`input_content: [text, image]` 能力标注；原独立 crate 已并入，P9）——由封装插件（plugin-opencode / plugin-deepseek / plugin-custom-provider）开启并注册为各自的 kind |
+| **cos-llm** | LLM 接缝（Definition；`adapters` feature 附带内置适配器族） | `Role`/`Message`/`ContentBlock`（Text/Thinking/ToolUse）、`UserMessage`（含 `images`、排队 `id`）、`LlmRequest`、`StreamChunk`/`ChunkDelta`（含 Finish）、`LlmAdapter` trait、`LlmStream`、`LlmRegistry`（服务 `"llm"`，providers/chains/后备链、`register_factory` 程序化注册）；**`adapters` feature**（默认关）：内置适配器族——`openai`（`/chat/completions`）、`anthropic`（`/messages`）、`responses`（`/responses`），SSE 流式优先、可重试失败自动非流式兜底；`build_with_style` 按 `api_style` 分发（`register_api_style` 可注册自定义风格），`fetch_models` 拉取 Provider 模型清单（原独立 crate 已并入，P9）——由封装插件（plugin-opencode-provider / plugin-deepseek-provider / plugin-custom-provider）开启并注册为各自的 kind |
 | **cos-test-support** | 测试支持（**仅 dev-dependencies 引用，不进正式二进制**） | `MockAdapter`/`MockReply`（原 cos-llm-mock 的脚本化 mock 桩）+ `ScriptedChatServer`（本地回环 `chat/completions` 服务器，e2e 经 `--llm-*` 以真实适配器协议离线驱动 CLI 链路）。**不注册任何工厂/插件条目** |
 | **cos-tools** | 工具注册表 + 执行管线（Definition） | `Tool` trait、`ToolRun`/`ToolOutcome`、`ToolGuard`（单调守卫）、`ToolRegistry`（服务 `"tools"`）；管线：`tools/pre-execute`(waterfall) → 守卫 → `tools/execute`(waterfall) → 工具体 → `tools/post-execute`(waterfall) → 结果 |
 | **cos-system-prompt** | prompt 段 + 工具 schema 装配 | `PromptSections`：system 提示按段组装、工具 schema 注入 |
@@ -67,7 +67,7 @@ CI 用 `cargo deny` 之外的 crate 依赖审查由 code review 把关。
 | **plugin-todo** | `todo_write` 工具（session 态清单，整表替换、最后写入胜出；提供 `"todo-store"` 服务）——**第三方工具插件的范本** |
 | **plugin-bash** | `bash` 工具（经 `cos-shell` 接缝前台执行命令） |
 | **plugin-llm** | LLM 提供商统一管理：yaml `providers`/`chains` → `LlmRegistry`；`${ENV_VAR}` 展开 |
-| **plugin-opencode** | **Provider 封装插件（运行时声明式装配）**：apply 时把 `"opencode"` 工厂与**套餐默认端点**（`config.plan: go\|zen`，base_url 可覆盖）注册进 `LlmRegistry`（`register_factory_with_defaults`——provider 条目的 `base_url` 可省略）。**新 Provider 的范本**：新 crate（适配器实现）+ 新 plugin（apply 注册工厂）+ 锚点 |
+| **plugin-opencode-provider** | **Provider 封装插件（运行时声明式装配）**：apply 时把 `"opencode"` 工厂与**套餐默认端点**（`config.plan: go\|zen`，base_url 可覆盖）+ **go/zen 内置模型目录**（每模型标注 api style：openai/anthropic/responses）注册进 `LlmRegistry`（`register_factory_with_catalog` + [`cos_llm::build_with_style`]——provider 条目的 `base_url`/`api_style` 可省略）。**新 Provider 的范本**：新 crate（适配器实现）+ 新 plugin（apply 注册工厂）+ 锚点 |
 | **plugin-custom-provider** | **自定义 Provider 插件（纯配置，无需写代码）**：注册 `kind: custom`（复用 OpenAI 兼容适配器），`config.defaults` 可下沉公共字段（base_url/api_key，支持 `${ENV_VAR}`）——任意 OpenAI 兼容端点开箱即用 |
 | **plugin-memory** | 关系层记忆插件（提供 `"memory"` 服务 + `remember`/`recall`/`inventory`/`demote` 四工具；LLM 未就绪时软降级禁用，不阻塞会话） |
 | **plugin-rpc** | 向宿主注册默认 RPC provider（`--rpc` 委托；yml 未声明时宿主回退内置实现） |
@@ -434,11 +434,21 @@ kinds 并提示声明插件（plugin-llm 的 build 错误已带此提示）。�
 kind, build, defaults, catalog)` 注册——`build(kind, config)` 时**三级浅合并**（插件级
 `defaults` < 模型级 `catalog[config.model]` < 条目 config，条目覆盖）。`catalog` 条目为
 [`cos_llm::ModelDefaults`] `{ model, group, defaults }`：Provider 插件内置**可用模型清单**
-（如 plugin-opencode 的 `BUILTIN_MODELS`——go/zen 套餐各自端点/api 风格/预算，模型间
-可不同），`group` 给模型打**分组标签**（套餐）——用户配置 `group: <组>` 即可按组展开，
+（如 plugin-opencode-provider 的 `BUILTIN_MODELS`——go/zen 套餐各自端点/api 风格/预算，
+模型间可不同），`group` 给模型打**分组标签**（套餐）——用户配置 `group: <组>` 即可按组展开，
 查询面 `available_groups` / `models_in_group`（运行时与插件 crate 纯函数双形态）。
 `config.models` 可追加/覆盖（同名后者生效）。`defaults`/目录中的 `${ENV_VAR}`
 由注册方在 apply 内展开（`cos_llm::expand_env`）。
+
+**api style（把协议适配交给插件）**：注册 kind 时用 `cos_llm::build_with_style` 作
+`build`——合并配置的 `api_style` 决定风格构建器（缺省 `"openai"`；内置
+`openai`/`anthropic`/`responses`，路径后缀由风格决定）。**自定义风格插件**：
+新 crate 实现 `fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>`，
+apply 里 `cos_llm::register_api_style("<风格>", build)`（或经
+`ctx.get::<LlmRegistry>()?.register_api_style`），然后任何 Provider 的目录条目声明
+`api_style: "<风格>"` 即按此构建——同 kind 内不同模型可各用不同风格。模型清单也可
+**从 Provider 拉取**：`cos_llm::fetch_models(endpoint, api_style)`（阻塞式，apply 期
+调用；plugin-opencode 的 `models_endpoint` 即此用法的范本）。
 
 > **不想写代码？** 任意 OpenAI 兼容端点直接声明 `custom-provider` 插件 + `kind: custom`
 > 条目（纯配置，见 `docs/configuration.md`）——代码级自定义（本文）与纯配置自定义是
@@ -464,14 +474,16 @@ kind, build, defaults, catalog)` 注册——`build(kind, config)` 时**三级�
 ## 5. B 形态插件（独立 cdylib，dlopen 加载）
 
 适用场景：**不参与宿主 workspace 编译**的独立分发插件（闭源 / 异语言 / 动态安装）。
-设计详见 `docs/b-abi.md`；P8 试点（工具/事件/效果）与 P9 服务桥接均已落地
-（`plugin-todo-dlopen` + `examples/dlopen.yml` 已可跑通）。
+设计详见 `docs/b-abi.md`；P8 试点（工具/事件/效果）、P9 服务桥接、P10 清单一等
+公民（清单参与依赖图 + 能力裁剪）、P11 资源生命周期（字符串驻留 + `free` 诚实
+回收 + 工具自动注销）、P12 暴露面审计（validate 兑现 + 清单 api 强制 + RAII
+卸载顺序修复）均已落地（`plugin-todo-dlopen` + `examples/dlopen.yml` 已可跑通）。
 
 ### 5.1 契约与版本协商
 
-- 契约 crate：`cos-contract`（零运行时依赖），持有 `API_VERSION`（当前 `0.3.0`）；
+- 契约 crate：`cos-contract`（零运行时依赖），持有 `API_VERSION`（当前 `0.4.0`）；
 - 兼容规则：`major` 必须相等，且插件 `minor ≤ 宿主 minor`（`ContractVersion::compatible_with`）；
-- 边界载荷：**一切结构化数据 = UTF-8 JSON 字符串**；不透明指针、`c_char` 字符串、整数、`u32` 版本号是仅有的跨边界类型；字符串生命周期：宿主分配（错误缓冲）、插件只读不持有（事件 JSON）、调用返回后即失效；
+- 边界载荷：**一切结构化数据 = UTF-8 JSON 字符串**；不透明指针、`c_char` 字符串、整数、`u32` 版本号是仅有的跨边界类型；字符串生命周期：宿主分配（错误缓冲）、插件只读不持有（事件 JSON）、调用返回后即失效；事件名/工具名等宿主侧驻留、随插件卸载释放（P11）；
 - 插件清单 JSON（id/inject/provide/config schema）供宿主预检与拓扑排序。
 
 ### 5.2 导出符号（cdylib 必须导出）
@@ -480,7 +492,7 @@ kind, build, defaults, catalog)` 注册——`build(kind, config)` 时**三级�
 | --- | --- | --- |
 | `cos_plugin_abi_version` | `fn() -> u32` | 返回 `API_VERSION.encode()`（`major<<16|minor<<8|patch`），宿主先握手 |
 | `cos_plugin_apply` | `fn(*const HostApi, HostCtx, *const c_char, ErrorBuf, usize) -> i32` | 执行注册；失败写 error_buf（UTF-8）并返回错误码 |
-| `cos_plugin_validate`（可选） | `fn(*const c_char, ErrorBuf, usize) -> i32` | 配置预校验 |
+| `cos_plugin_validate`（可选，P12 兑现） | `fn(*const c_char, ErrorBuf, usize) -> i32` | 配置预校验：宿主在 apply **之前**调用；非零返回 → 装载失败（fail loud，错误文本入 error_buf）；缺失 = 跳过 |
 
 ### 5.3 HostApi 能力函数表（`#[repr(C)]`，字段顺序即 ABI）
 
@@ -491,7 +503,7 @@ kind, build, defaults, catalog)` 注册——`build(kind, config)` 时**三级�
 | `emit` | `fn(ctx, name, payload_json)` | 广播事件（同步分发） |
 | `on` | `fn(ctx, name, callback, userdata) -> Handle` | 注册事件监听；`free` 注销 |
 | `register_effect` | `fn(ctx, disposer, userdata) -> Handle` | 注册效果；卸载时**逆序**调用 disposer |
-| `free` | `fn(ctx, handle)` | 释放 on / register_effect 句柄 |
+| `free` | `fn(ctx, handle)` | 释放 on / register_effect / register_tool 句柄（**诚实回收**，P11）：监听/效果提前注销、工具移除；未知/外来/重复句柄 = 幂等无操作（插件不得重复 free，但重复无害） |
 | `register_tool` | `fn(ctx, name, description, parameters_json, execute, userdata) -> Handle` | 注册工具（0.2.0 追加）：执行时宿主把 `ToolRun` 序列化为 JSON 调 `execute`，插件把 `ToolOutcome` JSON 写入 result_buf |
 | `service_call` | `fn(ctx, service, method, args_json, result_buf, result_len) -> i32` | 调用服务（0.3.0 追加，P9）：`service` 必须是 `get_service` 的返回值（身份校验，伪造/悬垂 → `InvalidHandle`）；method + args JSON → 结果 JSON 写宿主缓冲；桥调用失败 → `CallFailed`（=7），错误文本入缓冲 |
 
@@ -504,14 +516,51 @@ kind, build, defaults, catalog)` 注册——`build(kind, config)` 时**三级�
     marker: target/dlopen-disposed.txt          # 示例配置：卸载时验证 disposer 链
 ```
 
+### 5.4.1 第三方交付形态（cdylib + cordis.patch.yml，P13）
+
+B 形态插件作为**第三方插件**交付 = cdylib + 自带 `cordis.patch.yml`，与用户的主
+`cordis.yml` 组装成完整插件列表（对标 dsh 的 bundle 自带 patch 层；层叠规则与
+patch 语义见 `docs/configuration.md` §1.5）：
+
+```
+third-party-plugin/
+├── plugin.dll / plugin.so / libplugin.dylib   # cdylib（含 manifest/validate 导出）
+└── cordis.patch.yml                           # 启用清单：insert 本插件的 dlopen 条目
+```
+
+```yaml
+# third-party-plugin/cordis.patch.yml —— 第三方包自带
+- insert:
+  - name: ./third-party-plugin/plugin.dll      # 路径相对用户 cwd（或绝对路径）
+    config: { ... }                            # 插件配置（${ENV_VAR} 由插件自身展开）
+```
+
+用户启用方式（任选其一，推荐主 yml `patch:` 声明——主 yml 保持"完整清单声明处"）：
+
+```yaml
+# 用户 cordis.yml —— 对象形态声明第三方 patch 层
+patch: [third-party-plugin/cordis.patch.yml]
+entries:
+  - name: todo
+```
+
+```bash
+# 或 CLI 临时 overlay（可多次，后覆盖先）
+cos --config cordis.yml --patch third-party-plugin/cordis.patch.yml
+```
+
+**完整插件列表的权威输出**：`cos --config cordis.yml --dump-config` —— 与装载共用
+同一合并路径，输出合并后的完整条目列表，每条目带 `source` 标注来源文件
+（`cordis.yml` / patch 文件路径）。
+
 ### 5.5 B 形态插件与其他插件通信（现状）
 
 P8/P9 已桥接的通道（实现见 `cos-loader/src/dlopen.rs`）：
 
 | 通道 | 方向 | 现状 |
 | --- | --- | --- |
-| 事件 `emit` / `on` | 双向 | ✅ B 插件 `emit` 的 JSON 载荷被宿主包成 `PluginEvent(Value)` 广播到总线；`on` 回调收到宿主序列化的 JSON。⚠️ 只有 **JSON 载荷**事件对 B 插件可见（非 JSON 载荷回调收到 `"{}"`）；事件名以 `&'static str` 跨边界泄漏，插件级事件名数量有限 |
-| 工具 `register_tool` | B → 宿主 | ✅ 注册进 `ToolRegistry` 与 A 插件工具同池；执行 = C 回调（`ToolRun` JSON → 插件 → `ToolOutcome` JSON 写回宿主缓冲），经模型调用间接协作 |
+| 事件 `emit` / `on` | 双向 | ✅ B 插件 `emit` 的 JSON 载荷被宿主包成 `PluginEvent(Value)` 广播到总线；`on` 回调收到宿主序列化的 JSON。⚠️ 只有 **JSON 载荷**事件对 B 插件可见（非 JSON 载荷回调收到 `"{}"`）。事件名由宿主**插件级驻留区**持有、随卸载释放（P11：不再泄漏） |
+| 工具 `register_tool` | B → 宿主 | ✅ 注册进 `ToolRegistry` 与 A 插件工具同池；执行 = C 回调（`ToolRun` JSON → 插件 → `ToolOutcome` JSON 写回宿主缓冲），经模型调用间接协作。**卸载/`free` 自动注销**（P11，不留僵尸工具；重载同名工具可再注册） |
 | 效果 `register_effect` | B → 宿主 | ✅ 卸载时宿主逆序调用 disposer |
 | 服务 `get_service` + `service_call`（P9） | B → 宿主服务 | ✅ 按名查 [`BridgeRegistry`]（服务 `"bridges"`，宿主 `assemble` 时注册内置桥）→ 不透明句柄 → `service_call(method, args_json)` → 结果 JSON。内置桥：`tools`（`list` → 工具清单）、`llm`（`kinds` / `supports`）；第三方服务实现 `cos_core::JsonBridge` 后注册即对 B 形态开放。⚠️ 服务句柄带身份校验（伪造/悬垂 → `InvalidHandle`）；宿主状态与插件实例同生命周期，插件可自持 ctx/host 指针在工具回调内调用 |
 | 服务 `get_service`（未注册桥） | B → 其他插件 | ⚠️ 未注册 `JsonBridge` 的服务不可直连（返回空指针）——这类协作仍走**事件转发**：B `emit` 请求事件（JSON）→ A 插件监听并调用服务 → A `emit` 回结果事件（JSON） |

@@ -309,7 +309,7 @@ fn inject_edge_overrides_tier() {
 #[test]
 fn entry_defaults_are_applied() {
     let profile = Profile::parse("- name: x\n").unwrap();
-    let entry = &profile.0[0];
+    let entry = &profile.entries[0];
     assert_eq!(entry.id(), "x");
     assert_eq!(entry.config, serde_json::Value::Null);
     assert!(entry.inject.is_empty());

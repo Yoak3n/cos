@@ -1,4 +1,5 @@
-//! OpenAI 兼容 `chat/completions` 适配器（Provider 实现；`cos-llm` 的 **`openai` feature**）。
+//! OpenAI 兼容 `chat/completions` 适配器（api style: `"openai"`；`cos-llm` 的
+//! **`adapters` feature**）。
 //!
 //! `stream()` 是同步方法（[`LlmAdapter`] 对象安全接缝），故内部 `tokio::spawn` 转发：
 //! 请求在后台任务执行，chunk 经 unbounded channel 流入返回的流；调用方必须在
@@ -15,9 +16,10 @@
 //! 由消费方决定是否展示——不再混入文本、也不再丢弃。
 //!
 //! 插件化装配：本模块是 Provider **实现**（[`build_openai`]），**不含注册**——kind 由
-//! 封装插件声明（plugin-opencode 的 `kind: opencode`、plugin-deepseek 的 `kind:
-//! deepseek`、plugin-custom-provider 的 `kind: custom` 均复用本适配器），在 apply 时经
-//! [`LlmRegistry::register_factory`] 声明式注册。**依赖纪律**：本模块随 `openai`
+//! 封装插件声明（plugin-opencode-provider 的 `kind: opencode`、plugin-deepseek-provider
+//! 的 `kind: deepseek`、plugin-custom-provider 的 `kind: custom` 均经
+//! [`crate::build_with_style`] 按 `api_style` 分发到本模块/其他风格），在 apply 时经
+//! [`LlmRegistry::register_factory`] 声明式注册。**依赖纪律**：本模块随 `adapters`
 //! feature 引入 reqwest/tokio——只有 Provider 封装插件开启该 feature，普通消费者
 //! （memory/agent 等）用默认特性即零网络依赖。
 //!
@@ -26,8 +28,8 @@
 use std::sync::Arc;
 
 use crate::{
-    ChunkDelta, ContentBlock, InputContent, LlmAdapter, LlmError, LlmRequest, LlmStream, Message,
-    StreamChunk, TokenUsage, ToolCall,
+    ChunkDelta, ContentBlock, FinishReason, InputContent, LlmAdapter, LlmError, LlmErrorCode,
+    LlmRequest, LlmStream, Message, StreamChunk, TokenUsage, ToolCall, truncate,
 };
 use futures::StreamExt;
 use serde::Deserialize;
@@ -59,8 +61,12 @@ pub fn build_openai(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, L
         // 推理模型思考会吃掉预算：2048 太小（思考 + 正文可能截断成空 content），给到 4096
         Some(4096)
     }
-    let config: ProviderConfig = serde_json::from_value(config.clone())
-        .map_err(|error| LlmError::Failure(format!("OpenAI 兼容提供商配置无效: {error}")))?;
+    let config: ProviderConfig = serde_json::from_value(config.clone()).map_err(|error| {
+        LlmError::new(
+            LlmErrorCode::InvalidRequest,
+            format!("OpenAI 兼容提供商配置无效: {error}"),
+        )
+    })?;
     let input_content = if config.input_content.is_empty() {
         vec![InputContent::Text]
     } else {
@@ -188,12 +194,9 @@ struct SseUsage {
     completion_tokens: u64,
 }
 
-/// 一步请求的失败分类：决定是否走非流式兜底。
-enum StepError {
-    /// 服务端侧失败（5xx / error 块）且尚无产出 → 可兜底。
-    Retryable(String),
-    /// 其余失败（4xx / 网络 / 解析）→ 原样报错。
-    Fatal(String),
+/// 按 HTTP 状态码分类错误（共用实现见 [`crate::classify_status`]）。
+fn classify_status(status: u16, text: &str) -> LlmError {
+    crate::classify_status(status, text)
 }
 
 impl OpenAiAdapter {
@@ -312,7 +315,12 @@ impl OpenAiAdapter {
             .bearer_auth(&self.config.api_key)
             .json(&self.body(request, streaming))
             .build()
-            .map_err(|error| LlmError::Failure(format!("请求构造失败: {error}")))
+            .map_err(|error| {
+                LlmError::new(
+                    LlmErrorCode::InvalidRequest,
+                    format!("请求构造失败: {error}"),
+                )
+            })
     }
 }
 
@@ -337,8 +345,8 @@ impl LlmAdapter for OpenAiAdapter {
                 }
             };
             tokio::spawn(async move {
-                if let Err(message) = single_shot(&client, single_req, &tx).await {
-                    let _ = tx.send(Err(LlmError::Failure(message)));
+                if let Err(error) = single_shot(&client, single_req, &tx).await {
+                    let _ = tx.send(Err(error));
                 }
             });
             return Box::pin(futures::stream::unfold(rx, |mut rx| async move {
@@ -369,7 +377,7 @@ impl LlmAdapter for OpenAiAdapter {
     }
 }
 
-/// 后台任务：流式优先；服务端失败且尚无产出 → 非流式兜底。
+/// 后台任务：流式优先；**可重试失败**（服务端/限流/网络/未分类）且尚无产出 → 非流式兜底。
 async fn run_request(
     client: reqwest::Client,
     streaming_req: reqwest::Request,
@@ -380,43 +388,37 @@ async fn run_request(
     match stream_once(&client, streaming_req, &tx, &mut sent).await {
         Ok(()) => Ok(()),
         Err(error) => {
-            if sent == 0 && matches!(error, StepError::Retryable(_)) {
-                single_shot(&client, single_req, &tx)
-                    .await
-                    .map_err(|message| {
-                        LlmError::Failure(format!("{message}（非流式兜底同样失败）"))
-                    })
+            if sent == 0 && error.is_retryable() {
+                match single_shot(&client, single_req, &tx).await {
+                    Ok(()) => Ok(()),
+                    Err(fallback) => Err(LlmError {
+                        code: fallback.code,
+                        message: format!("{}（非流式兜底同样失败）", fallback.message),
+                        facts: fallback.facts,
+                    }),
+                }
             } else {
-                Err(match error {
-                    StepError::Retryable(message) | StepError::Fatal(message) => {
-                        LlmError::Failure(message)
-                    }
-                })
+                Err(error)
             }
         }
     }
 }
 
-/// 流式执行：SSE 逐行解析并转发；失败分类为 [`StepError`]。
+/// 流式执行：SSE 逐行解析并转发；失败带稳定错误码（[`LlmErrorCode`]）。
 async fn stream_once(
     client: &reqwest::Client,
     req: reqwest::Request,
     tx: &tokio::sync::mpsc::UnboundedSender<Result<StreamChunk, LlmError>>,
     sent: &mut usize,
-) -> Result<(), StepError> {
+) -> Result<(), LlmError> {
     let response = client
         .execute(req)
         .await
-        .map_err(|error| StepError::Fatal(format!("请求失败: {error}")))?;
+        .map_err(|error| LlmError::new(LlmErrorCode::Network, format!("请求失败: {error}")))?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        let message = format!("HTTP {status}: {}", truncate(&text, 300));
-        return Err(if status.is_server_error() {
-            StepError::Retryable(message)
-        } else {
-            StepError::Fatal(message)
-        });
+        return Err(classify_status(status.as_u16(), &text));
     }
 
     let mut stream = response.bytes_stream();
@@ -446,10 +448,10 @@ async fn stream_once(
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(data)
                 && value.get("type").and_then(|t| t.as_str()) == Some("error")
             {
-                return Err(StepError::Retryable(format!(
-                    "服务端错误: {}",
-                    truncate(data, 300)
-                )));
+                return Err(LlmError::new(
+                    LlmErrorCode::Server,
+                    format!("服务端错误: {}", truncate(data, 300)),
+                ));
             }
             let chunk: SseChunk = match serde_json::from_str(data) {
                 Ok(chunk) => chunk,
@@ -541,7 +543,10 @@ async fn stream_once(
                     buffer.push_str(&String::from_utf8_lossy(&bytes));
                 }
                 Some(Err(error)) => {
-                    return Err(StepError::Fatal(format!("流读取失败: {error}")));
+                    return Err(LlmError::new(
+                        LlmErrorCode::Network,
+                        format!("流读取失败: {error}"),
+                    ));
                 }
                 None => eof = true,
             }
@@ -569,6 +574,17 @@ async fn stream_once(
             },
         }));
     }
+    // 终结分片：显式结束原因（有工具块 → ToolCalls，否则 Stop；对齐 dsh finish chunk）
+    let _ = tx.send(Ok(StreamChunk {
+        delta: ChunkDelta::Finish {
+            reason: if tools.is_empty() {
+                FinishReason::Stop
+            } else {
+                FinishReason::ToolCalls
+            },
+        },
+        usage: None,
+    }));
     Ok(())
 }
 
@@ -577,19 +593,26 @@ async fn single_shot(
     client: &reqwest::Client,
     req: reqwest::Request,
     tx: &tokio::sync::mpsc::UnboundedSender<Result<StreamChunk, LlmError>>,
-) -> Result<(), String> {
+) -> Result<(), LlmError> {
     let response = client
         .execute(req)
         .await
-        .map_err(|error| format!("请求失败: {error}"))?;
+        .map_err(|error| LlmError::new(LlmErrorCode::Network, format!("请求失败: {error}")))?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status}: {}", truncate(&text, 300)));
+        return Err(classify_status(status.as_u16(), &text));
     }
-    let raw = response.text().await.map_err(|error| error.to_string())?;
-    let completion: Completion =
-        serde_json::from_str(&raw).map_err(|error| format!("非流式响应不是合法 JSON: {error}"))?;
+    let raw = response
+        .text()
+        .await
+        .map_err(|error| LlmError::new(LlmErrorCode::Network, format!("响应读取失败: {error}")))?;
+    let completion: Completion = serde_json::from_str(&raw).map_err(|error| {
+        LlmError::new(
+            LlmErrorCode::Protocol,
+            format!("非流式响应不是合法 JSON: {error}"),
+        )
+    })?;
     // 逐 choice 收集：思考块（reasoning_content）+ 文本块 + 工具调用块
     let mut thinking = String::new();
     let mut text = String::new();
@@ -655,20 +678,21 @@ async fn single_shot(
     if let Some(Ok(last)) = chunks.last_mut() {
         last.usage = usage;
     }
+    // 终结分片：显式结束原因（有工具调用 → ToolCalls，否则 Stop）
+    chunks.push(Ok(StreamChunk {
+        delta: ChunkDelta::Finish {
+            reason: if tool_calls.is_empty() {
+                FinishReason::Stop
+            } else {
+                FinishReason::ToolCalls
+            },
+        },
+        usage: None,
+    }));
     for chunk in chunks {
         if tx.send(chunk).is_err() {
             return Ok(()); // 接收方已丢弃（提前取消）
         }
     }
     Ok(())
-}
-
-/// 截断过长错误文本（避免整页回显）。
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        let head: String = text.chars().take(max).collect();
-        format!("{head}…")
-    }
 }

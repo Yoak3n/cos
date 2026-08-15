@@ -7,7 +7,7 @@ description = "自定义 Provider 插件：纯配置接入任意 OpenAI 兼容 c
 
 [dependencies]
 cos-core = { path = "../../crates/cos-core", version = "0.1.0" }
-cos-llm = { path = "../../crates/cos-llm", version = "0.1.0", features = ["openai"] }
+cos-llm = { path = "../../crates/cos-llm", version = "0.1.0", features = ["adapters"] }
 cos-loader = { path = "../../crates/cos-loader", version = "0.1.0" }
 inventory.workspace = true
 serde.workspace = true

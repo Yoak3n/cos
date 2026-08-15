@@ -97,6 +97,7 @@ async fn main() -> Result<(), cos::AppError> {
         llm: None,
         agent_llm: None,
         agent_driver: None,
+        patch_files: Vec::new(),
     };
     let assembled = assemble(&config).await?;
     println!(

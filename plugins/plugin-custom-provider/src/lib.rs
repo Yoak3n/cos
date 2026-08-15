@@ -128,7 +128,12 @@ impl Plugin for CustomProviderPlugin {
             expand_env(&mut entry.defaults).map_err(CoreError::Other)?;
         }
         registry
-            .register_factory_with_catalog(CUSTOM_KIND, cos_llm::build_openai, defaults, catalog)
+            .register_factory_with_catalog(
+                CUSTOM_KIND,
+                cos_llm::build_with_style,
+                defaults,
+                catalog,
+            )
             .map_err(|error| {
                 CoreError::Other(format!(
                     "custom 工厂注册失败（kind '{CUSTOM_KIND}' 已存在？）: {error}"

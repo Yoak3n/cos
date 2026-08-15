@@ -158,7 +158,8 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
 
     // 插件树（锚定 + yml 装载，见 plugins 模块；plugin-opencode 在此注册工厂）。
     // config_path: None = 零插件装配（库嵌入：只提供内置服务，插件树为空）。
-    let app = plugins::load(&root, config.config_path.as_deref())?;
+    // P13：patch 层叠（主 yml `patch:` 声明 + 同目录 cordis.patch.yml + --patch）。
+    let app = plugins::load(&root, config.config_path.as_deref(), &config.patch_files)?;
 
     // --llm-*：opencode 快捷方式（在插件树之后——工厂由 plugin-opencode 声明注册）。
     // 未声明插件 = 关键组件缺失 → 报警退出。
@@ -442,7 +443,7 @@ pub async fn run(config: RunConfig) -> Result<RunReport, AppError> {
             .as_deref()
             .ok_or_else(|| AppError::Other("--dump-config 需要 cordis.yml 路径".into()))?;
         return Ok(RunReport {
-            dump: Some(plugins::plan_json(path)?),
+            dump: Some(plugins::plan_json(path, &config.patch_files)?),
             unload_order: Vec::new(),
             events: Vec::new(),
             messages: Vec::new(),

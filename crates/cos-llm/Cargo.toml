@@ -7,10 +7,11 @@ description = "LLM 接缝：Message/ContentBlock、LlmAdapter trait、stream、�
 
 [features]
 default = []
-# OpenAI 兼容 chat/completions 适配器（build_openai/OpenAiAdapter）——随 feature 引入
+# 内置协议适配器（api style 分发：openai / anthropic / responses）——随 feature 引入
 # reqwest/tokio；只有 Provider 封装插件（plugin-opencode/deepseek/custom-provider）
-# 开启，普通消费者用默认特性即零网络依赖（P9 决策：原 cos-llm-openai crate 并入）。
-openai = ["dep:reqwest", "dep:tokio"]
+# 开启，普通消费者用默认特性即零网络依赖（P9 决策：原 cos-llm-openai crate 并入；
+# 现为"适配器族"，api style 可由插件扩展）。
+adapters = ["dep:reqwest", "dep:tokio"]
 
 [dependencies]
 cos-core = { path = "../cos-core", version = "0.1.0" }
@@ -19,10 +20,10 @@ inventory.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls", "blocking"], optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 cos-test-support = { path = "../cos-test-support", version = "0.1.0" }
-cos-llm = { path = ".", version = "0.1.0", features = ["openai"] }
+cos-llm = { path = ".", version = "0.1.0", features = ["adapters"] }
 tokio.workspace = true

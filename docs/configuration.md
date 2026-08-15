@@ -21,15 +21,61 @@ invariants / shell / agents / llm 注册表 / bridges / rpc-providers）由宿�
 
 ---
 
+## 1.5 patch 层叠（cordis.yml + cordis.patch.yml，P13）
+
+主 `cordis.yml` 是**顶层数组**（上面的条目清单）；P13 起支持**对象形态**在文件内
+声明 patch 层，并把同目录 `cordis.patch.yml` 与 CLI `--patch` 一起组装成**完整
+插件列表**（对标 dsh 的 cordis.patch.yml 体系，静态装载变体）：
+
+```yaml
+# cordis.yml —— 对象形态（顶层数组形态仍然兼容，等价于省略 patch/entries 包装）
+patch: [third-party/cordis.patch.yml]   # 可选：patch 文件（相对本文件目录，按序应用）
+entries:                                # 可选：本文件的条目（缺省空）
+  - name: todo
+```
+
+**应用顺序**（后覆盖先，按 id/name 定位）：
+
+1. 主 yml 条目（`source: "cordis.yml"`）；
+2. 主 yml `patch:` 声明的文件（按列表顺序）；
+3. 同目录 `cordis.patch.yml`（**自动应用**，若未被主 yml 显式声明——去重防双应用）；
+4. CLI `--patch <file>`（可多次，按 argv 顺序；相对当前目录）。
+
+**patch 文件** = 顶层数组，每条一个 patch（对标 dsh `applyEntryPatches`）：
+
+```yaml
+# third-party/cordis.patch.yml —— 第三方包自带（B 形态插件的入口）
+- id: main-llm                # 定位主 yml 条目（id 或 name 任一）
+  name: llm                   # 可选：名称校验（不匹配 → fail loud）
+  config: { model: pro }      # 覆盖目标条目配置（整体替换）
+  disabled: true              # 覆盖目标条目禁用状态
+- insert:                     # 追加新条目（只能无 id —— v1 无 group）
+  - name: ./plugins/third-party/plugin.dll
+    config: { ... }
+```
+
+**fail loud**（与 dsh 的 warn+skip 不同——dsh 容忍是为热重载，cos 静态装载直接报错）：
+patch 定位不到目标（错误列出可用条目 id）、名称不匹配、insert 带 id、patch 文件
+缺失/非顶层数组 → 启动失败。
+
+**完整插件列表在哪**：主 yml 不再单独构成完整清单——完整列表 = 主 yml 条目 +
+各 patch 层的 `insert` 与覆盖结果。权威输出 = `cos --config cordis.yml --dump-config`
+（与装载共用同一合并路径，每条目带 `source` 标注其来源文件）。
+
+---
+
 ## 2. 内置插件与配置
 
-### `opencode-provider` —— opencode Provider 插件（套餐端点 + 内置模型目录）
+### `opencode-provider` —— opencode Provider 插件（套餐端点 + 内置模型目录 + 多 api style）
 
 **作用**：把 `"opencode"` 工厂注册进 LlmRegistry，并注册**内置模型目录**
 （[`BUILTIN_MODELS`]——go/zen 套餐的可用模型，每个模型独立带端点/api 风格/预算）。
-`build` 时**三级合并**：插件级套餐兜底 < 模型级目录 < 条目 config。它是 `--llm-*` 与
-`kind: opencode` 可用的前提；llm 配置里用 `plugin: opencode-provider` 直接引用本插件
-（kind 自动解析，模型从目录选择）。
+`build` 时**三级合并**：插件级套餐兜底 < 模型级目录 < 条目 config，随后按合并配置的
+`api_style` **分发到对应风格适配器**（[`cos_llm::build_with_style`]，路径后缀由风格
+决定：`openai` → `/chat/completions`、`anthropic` → `/messages`、`responses` →
+`/responses`——opencode-go 内部三种端点并存，同一 `https://opencode.ai/zen/go/v1`
+base_url）。它是 `--llm-*` 与 `kind: opencode` 可用的前提；llm 配置里用
+`plugin: opencode-provider` 直接引用本插件（kind 自动解析，模型从目录选择）。
 
 | 配置字段 | 缺省 | 说明 |
 | --- | --- | --- |
@@ -37,25 +83,32 @@ invariants / shell / agents / llm 注册表 / bridges / rpc-providers）由宿�
 | `base_url` | 套餐端点 | 端点覆盖（优先级低于模型目录条目、高于套餐兜底） |
 | `api_key` | — | **插件级 api_key**：provider 条目可省略（条目仍可覆盖）；支持 `${ENV_VAR}` 展开（如 `${OPENCODE_API_KEY}`，缺失 fail loud），密钥不进文件 |
 | `models` | 内置目录 | 模型目录**追加/覆盖**（同名模型后者生效）：`- { model: <id>, group?/defaults: { base_url, api_style, api_key, streaming, max_tokens, input_content, ... } }`；`group` 为分组标签（如 `go`/`zen` 套餐，llm 条目的 `group:` 选择用） |
+| `models_endpoint` | — | **模型清单拉取端点**（opt-in）：apply 时 GET（如 `https://opencode.ai/zen/go/v1/models`）拉取 Provider 可用模型并入目录（内置 < 拉取 < `config.models`）；网络失败 fail loud |
+| `models_api_style` | `openai` | 拉取模型的默认 api style（可经 `config.models` 逐模型覆盖） |
 
-内置目录（示例性，可按需扩展）：
+内置目录（go 套餐按官方 API 文档标注 api style；示例性，可按需扩展）：
 
-| 模型 | 套餐 | 端点 | api_style |
+| 模型 | 套餐 | api_style | 端点路径 |
 | --- | --- | --- | --- |
-| `deepseek-v4-flash` | go | `https://opencode.ai/zen/go/v1` | openai |
-| `deepseek-v4-flash-free` | zen | `https://opencode.ai/zen/v1` | openai |
+| `glm-5.3` / `kimi-k3` / `deepseek-v4-flash` / `hy3` 等 | go | openai | `/chat/completions` |
+| `minimax-m3` / `qwen3.8-max` 等 | go | anthropic | `/messages` |
+| `grok-4.5` / `gpt-5.6-luna` | go | responses | `/responses` |
+| `deepseek-v4-flash-free` | zen | openai | `/chat/completions` |
 
-`api_style` 字段已预留（当前适配器实现 `openai`；其余风格待适配器扩展——同一 Provider
-下不同模型走不同端点/风格时可在此声明）。
+`api_style` 是**按模型声明**的（同一 kind 内不同模型可各用不同风格）；未知风格 →
+fail loud 列出已注册 styles（`cos_llm::register_api_style` 可注册自定义风格）。
 
 ```yaml
 - name: opencode-provider
   config:
     plan: go
-    # 新模型 / 私有网关：追加或覆盖目录条目（同名后者生效）
+    # 新模型 / 私有网关：追加或覆盖目录条目（同名后者生效；风格可按模型声明）
     models:
       - { model: my-model, defaults: { base_url: "https://my-gateway/v1",
                                        api_style: "openai", streaming: false } }
+    # 从 Provider 拉取模型清单（opt-in；网络失败 fail loud）
+    # models_endpoint: "https://opencode.ai/zen/go/v1/models"
+    # models_api_style: "openai"
 ```
 
 ### `deepseek-provider` —— DeepSeek 官方 API Provider 插件（内置模型目录）
@@ -136,11 +189,11 @@ providers:
 ```
 
 - **可用模型查询**（`get_available_models`）：运行时 `LlmRegistry::available_models(kind)`；
-  插件 crate 层 `plugin_opencode::available_models()`（内置目录 + `config.models` 扩展后的
+  插件 crate 层 `plugin_opencode_provider::available_models()`（内置目录 + `config.models` 扩展后的
   模型 id 列表）——模型列表**在 Provider 插件代码里维护**（如 opencode-provider 的
   `BUILTIN_MODELS`），配置面 `config.models` 只做追加/覆盖；
 - **分组查询**（`get_available_groups`）：`LlmRegistry::available_groups(kind)` /
-  `plugin_opencode::available_groups()` 列出全部组标签；`models_in_group(kind, group)`
+  `plugin_opencode_provider::available_groups()` 列出全部组标签；`models_in_group(kind, group)`
   查某组内模型——`group:` 选择与错误提示共用（未知组 fail loud 列出可用分组）；
 - 显式选择的模型必须命中目录（fail loud 列出可用模型）；组 id 可在 `chains` 里引用，
   自动展开为组内模型按序；

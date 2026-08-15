@@ -7,7 +7,7 @@ description = "DeepSeek 官方 API Provider 的运行时插件（声明式注册
 
 [dependencies]
 cos-core = { path = "../../crates/cos-core", version = "0.1.0" }
-cos-llm = { path = "../../crates/cos-llm", version = "0.1.0", features = ["openai"] }
+cos-llm = { path = "../../crates/cos-llm", version = "0.1.0", features = ["adapters"] }
 cos-loader = { path = "../../crates/cos-loader", version = "0.1.0" }
 inventory.workspace = true
 serde.workspace = true

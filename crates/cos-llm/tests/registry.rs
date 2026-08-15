@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use cos_core::Context;
 use cos_llm::{
-    ChunkDelta, FallbackAdapter, InputContent, LlmAdapter, LlmError, LlmRegistry, LlmRequest,
-    LlmStream, ModelDefaults, StreamChunk, UserMessage,
+    ChunkDelta, FallbackAdapter, InputContent, LlmAdapter, LlmError, LlmErrorCode, LlmRegistry,
+    LlmRequest, LlmStream, ModelDefaults, StreamChunk, UserMessage,
 };
 use cos_test_support::{MockAdapter, MockReply};
 use futures::StreamExt;
@@ -95,9 +95,42 @@ impl LlmAdapter for MidStreamErrorAdapter {
     fn stream(&self, _request: &LlmRequest) -> LlmStream {
         Box::pin(futures::stream::iter(vec![
             Ok(StreamChunk::text("A")),
-            Err(LlmError::Failure("中途失败".to_string())),
+            Err(LlmError::new(LlmErrorCode::Other, "中途失败")),
         ]))
     }
+}
+
+/// 未产出即失败：**不可重试错误**（鉴权/配额/参数/协议/路由）→ 不切换后备，
+/// 原样传播（切下一个也会同样失败，不浪费调用）。
+#[tokio::test]
+async fn fallback_does_not_switch_on_fatal_error() {
+    let chain = Arc::new(FallbackAdapter::new(vec![
+        Arc::new(MockAdapter::new(
+            "auth",
+            vec![MockReply::error(LlmErrorCode::Auth, "401 鉴权失败")],
+        )),
+        Arc::new(MockAdapter::new("ok", vec![MockReply::text("B")])),
+    ]));
+    let (text, errors) = collect_text(chain).await;
+    assert!(text.is_empty(), "鉴权失败不应切换后备: {text}");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].code, LlmErrorCode::Auth);
+    assert!(errors[0].to_string().contains("401"), "{errors:?}");
+}
+
+/// 未产出即失败：**可重试错误**（服务端/限流/网络/未分类）→ 切换后备。
+#[tokio::test]
+async fn fallback_switches_on_retryable_error() {
+    let chain = Arc::new(FallbackAdapter::new(vec![
+        Arc::new(MockAdapter::new(
+            "server",
+            vec![MockReply::error(LlmErrorCode::Server, "500 服务端错误")],
+        )),
+        Arc::new(MockAdapter::new("ok", vec![MockReply::text("B")])),
+    ]));
+    let (text, errors) = collect_text(chain).await;
+    assert_eq!(text, "B", "服务端错误应切换到后备");
+    assert!(errors.is_empty());
 }
 
 /// 立即结束的空流适配器。
@@ -406,5 +439,70 @@ async fn catalog_merges_model_level_defaults() {
             .unwrap()
             .id(),
         "https://fallback/v1|openai|ghost"
+    );
+}
+
+/// api style 分发：kind 用 [`cos_llm::build_with_style`] 注册后，合并配置的
+/// `api_style` 决定构建器（默认 "openai"）；[`cos_llm::register_api_style`] 可注册
+/// 自定义风格；未知风格 fail loud 列出已注册。
+#[test]
+fn build_with_style_dispatches_and_registers_custom_styles() {
+    let ctx = Context::root();
+    let registry = LlmRegistry::new(&ctx);
+    registry
+        .register_factory_with_catalog(
+            "styled",
+            cos_llm::build_with_style,
+            json!({}),
+            vec![
+                ModelDefaults {
+                    model: "plain".into(),
+                    group: None,
+                    defaults: json!({ "api_style": "openai", "base_url": "https://x/v1" }),
+                },
+                ModelDefaults {
+                    model: "custom".into(),
+                    group: None,
+                    defaults: json!({ "api_style": "my-style", "base_url": "https://x/v1" }),
+                },
+            ],
+        )
+        .unwrap();
+    // 注册自定义风格（第三方风格适配器插件的入口）
+    cos_llm::register_api_style("my-style", |_| {
+        Ok(Arc::new(MockAdapter::new("my-style", vec![])))
+    })
+    .unwrap();
+    assert!(cos_llm::api_styles().contains(&"my-style"));
+    // 内置 openai 风格 → openai 适配器
+    let adapter = registry
+        .build("styled", &json!({ "model": "plain", "api_key": "k" }))
+        .unwrap();
+    assert_eq!(adapter.id(), "openai");
+    // 自定义风格 → 自定义构建器
+    let adapter = registry
+        .build("styled", &json!({ "model": "custom", "api_key": "k" }))
+        .unwrap();
+    assert_eq!(adapter.id(), "my-style");
+    // 未知风格 → fail loud 列出已注册 styles
+    let error = registry
+        .build(
+            "styled",
+            &json!({ "model": "custom", "api_key": "k", "api_style": "nope" }),
+        )
+        .err()
+        .expect("未知风格应失败");
+    assert!(
+        error.to_string().contains("未知 api style 'nope'"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("my-style"), "{error}");
+    // 重复注册 → Err
+    assert!(
+        cos_llm::register_api_style("my-style", |_| Ok(Arc::new(MockAdapter::new(
+            "dup",
+            vec![]
+        ))))
+        .is_err()
     );
 }

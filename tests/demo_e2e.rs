@@ -27,6 +27,7 @@ fn demo_config(base_url: String) -> RunConfig {
         }),
         agent_llm: None,
         agent_driver: None,
+        patch_files: Vec::new(),
     }
 }
 

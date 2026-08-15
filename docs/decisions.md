@@ -57,7 +57,7 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 - **scope 路由语义（P1 落地，照 `packages/core/scope/src/index.ts`）**：监听器注册时记录其上下文的 scope tag；`ScopeTarget::Key(k)` 分发时无 tag 监听器全收、tag 位于 `k` 祖先链（含 `k`）的监听器收——事件只向上流（祖先监听子孙，子孙不监听祖先）；`ScopeTarget::None` 对应 dsh 无 key 的 unkeyed carrier（排除一切带 tag 监听器）；父链绑定每 key 一次、拒绝成环（`bindScopeParent` 语义，无 rebind——A 形态不做运行时重组）。`fork_scoped(key)` = `createScope` 的 scoped ctx；`fork()` 继承 tag。
 - **注册纪律（P1）**：`ctx.on*` / `ctx.provide` 返回 `CoreResult<EffectHandle>`；fiber 已卸载后注册 → `CoreError::InactiveFiber`（同 dsh `INACTIVE_EFFECT`，fail loud）。
 - **loader 静态注册表（P2）**：`plugin!("name", MyPlugin)` 宏 + inventory 收集。`PluginRegistrar` 全部字段为函数指针（const 可构造，`inventory::submit!` 直接收集，无运行时初始化）；`P: Default`，实例装载期构造。`Plugin::inject/provide` 因此改为返回 `&'static [&'static str]`（P0 签名细化）。
-- **cordis.yml 形态（P2）**：`Profile = Vec<Entry>`（cordis.patch.yml 顶层数组语义，v1 无层叠）；条目 `{id?, name, config?, inject?, disabled?}`，config 原位解析为 `serde_json::Value`（§6：B 形态 wire 格式）；错误风格照 JS `failed to apply loader entry <id> (<name>): detail`。装载失败靠 RAII 自动回滚（已 apply 的 fork Context 随栈展开 drop → fiber 逆序反注册）。
+- **cordis.yml 形态（P2，P13 修订）**：`Profile = Vec<Entry>`（cordis.patch.yml 顶层数组语义；~~v1 无层叠~~ **P13 起支持 patch 层叠**，见文末 P13 条目）；条目 `{id?, name, config?, inject?, disabled?}`，config 原位解析为 `serde_json::Value`（§6：B 形态 wire 格式）；错误风格照 JS `failed to apply loader entry <id> (<name>): detail`。装载失败靠 RAII 自动回滚（已 apply 的 fork Context 随栈展开 drop → fiber 逆序反注册）。
 - **会话 wire 形状（P3）**：`SessionEvent` 信封 `{seq, time, type, data}`（flatten 的 tag/content 枚举）；事件名含 `/` 分隔符（`turn/start` 等）——serde 的 `rename_all` 只能做词法转换、会损毁 `/`，故逐变体显式 `rename`；版本钉 0、不兼容日志直接拒绝（同 dsh 无迁移语义）。serde 带 tag 枚举**不支持 newtype 变体**，`ContentBlock`/`ChunkDelta` 用 struct 变体（`Text { text }`）。
 - **derive_messages 投影（P3）**：surface = user/message、assistant/message、tool/result 按 seq 序；`Custom` 原样透传为 `Message::Custom`（决策 D4）；chunk/边界/请求头/工具调用为 log-only，不参与投影。
 - **LlmAdapter 接缝（P3）**：对象安全（同步方法 + boxed `LlmStream`）；usage 随末块携带（`StreamChunk.usage`），agent-loop（P4）装配进 assistant/message。
@@ -65,6 +65,7 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 - **Inbox claim 语义（P4，照 dsh inbox.ts）**：总是先取光 next-step，`NextTurn` 目标再额外取 next-turn 队列的**恰好一条**——每个排队 turn 消费一条，同 turn 内可再消费 steering/注入。
 - **Session 内部可变性（P4）**：`Session` 改为 `Arc<Mutex<Inner>>`（廉价 Clone）：Agent 句柄对外共享 `&Session` 只读视图，loop 以 `&self` 追加（写路径单写者）。
 - **驱动器相位与因果链（P4，照 agent.ts/AgentRegistry）**：`Phase { Idle, Running{turn,step,aborted}, Maintenance{wake_requested} }`；wake 闩在维护收敛后重放；`Running` 状态事件在调用方任务发出（同 dsh），`Idle` 在驱动器任务内（with_initiator 边界内，发起者可见）。`run_maintenance` 用类型擦除的 `Maintenance`（FnOnce + AbortSignal），对象安全。
+- **turn 配对不变量（P4 测试钉死）**：`TurnStart` 之后的一切提前返回（含取消）必须写 `TurnEnd{Aborted}` 收束。cancel_race 测试套（`crates/cos-agent-loop/tests/cancel_race.rs`：流中取消 / 调度前取消 / 工具执行中取消 / keep_inbox / 双重取消幂等）发现入口 `check_abort` 的 `?` 泄漏未闭合的 TurnEnd（配对不变量违规）——修复为收束前显式写 `TurnEnd{Aborted}`；`assert_pairing_balanced` 断言 StepStart↔StepEnd、TurnStart↔TurnEnd 配对平衡。
 - **工具管线（P5，照 tool-execution-pipeline.md）**：`tool/call` 先写日志（loop）→ `tools/pre-execute`(waterfall, Allow/Deny) → 单调守卫 → `tools/execute`(waterfall，链尾=工具体) → `tools/post-execute`(waterfall) → `tool/result` 写日志 + `tools/result` 实时通知。P5 简化：顺序执行（无并发池/屏障）、无 approval 服务（pre-execute veto 代替）、无 additionalContexts；参数解析照 dsh（空串→`{}`，非法 JSON→原串文本）。
 - **工具结果回流（P5，照 agent.ts）**：run_step 返回 `Option<TurnEndReason>`——`None` = 已执行工具、turn 继续；下一 step 以**空消息**进入（无新 user/message），derive_messages 含 Tool 结果回流模型。
 - **todo_write（P5）**：整表替换、最后写入胜出；会话态经 `current_initiator()` 因果链写 `todo/write`（log-only 事件，新增入封闭枚举）。
@@ -89,7 +90,7 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
 
 ## 阶段 2（桌面陪伴 agent）—— M2 决策
 
-- **真实 LLM 适配器（cos-llm 的 `openai` feature）**：OpenAI 兼容 `chat/completions`；`LlmAdapter::stream` 是同步方法 → 内部 `tokio::spawn` + unbounded channel 转发（调用方须在 runtime 内，同 mock 语义）。**流式优先、自动非流式兜底**：SSE 在未产出任何 chunk 前遇服务端失败（HTTP 5xx / `{"type":"error"}` 块）→ 重发 `stream:false` 单次请求，`choices[0].message.content`（空则 `reasoning_content`）+ usage 合成一个 chunk；4xx（鉴权/余额）不重试原样报错；已产出部分 chunk 后失败不再兜底（避免重复内容）。错误一律作为流内 `Err` 交付，不进 stderr。
+- **真实 LLM 适配器（cos-llm 的 `adapters` feature，原 `openai`）**：OpenAI 兼容 `chat/completions`；`LlmAdapter::stream` 是同步方法 → 内部 `tokio::spawn` + unbounded channel 转发（调用方须在 runtime 内，同 mock 语义）。**流式优先、自动非流式兜底**：SSE 在未产出任何 chunk 前遇服务端失败（HTTP 5xx / `{"type":"error"}` 块）→ 重发 `stream:false` 单次请求，`choices[0].message.content`（空则 `reasoning_content`）+ usage 合成一个 chunk；4xx（鉴权/余额）不重试原样报错；已产出部分 chunk 后失败不再兜底（避免重复内容）。错误一律作为流内 `Err` 交付，不进 stderr。
 - **opencode 端点（用户确认 + 实测）**：**订阅网关 base URL = `https://opencode.ai/zen/go/v1`**（OpenCode Go，
   订阅制，OpenAI 兼容；models.dev、bifrost、GoModel 三方实现一致：Bearer + `/v1/chat/completions`，支持 SSE）。
   实测（当日）：`/zen/go/v1/models` 正常；`/zen/go/v1/chat/completions` 对该 key **服务端恒 500**
@@ -201,8 +202,9 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   `BUILTIN_MODELS`（go/zen 套餐模型清单**不一致**：`deepseek-v4-flash` → go 端点、
   `deepseek-v4-flash-free` → zen 端点；每模型独立声明 `base_url`/`api_style`/`streaming`/
   `max_tokens`——同一 Provider 下各模型端点与 api 风格可不同），`config.models` 追加/覆盖
-  （同名后者生效，BTreeMap 收集时覆盖）；`api_style` 字段为适配器扩展点（当前实现
-  `openai`）。custom-provider 同样支持 `config.models`。
+  （同名后者生效，BTreeMap 收集时覆盖）；`api_style` 字段为适配器扩展点（后落地
+  openai/anthropic/responses 三种内置风格，见"api style 分发"条目）。custom-provider
+  同样支持 `config.models`。
 - **provider 条目按插件引用（去掉 kind 重复）**：`LlmRegistry` 增加 `provider_plugin!`
   静态映射（yml 插件名 → kind，inventory 收集，`kind_of_plugin`/`plugin_names` 查询）；
   plugin-llm 的 provider 条目改 `{ id, plugin: <插件名>, config: { model } }`——kind 不再
@@ -225,12 +227,12 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   分组与模型清单一样**由 Provider 插件代码维护**（`group:` 无需在配置里定义，只做选择）。
 - **custom-provider 插件（纯配置自定义 vs 代码级自定义）**：新增 `plugins/plugin-custom-provider`
   （yml 工厂名 `custom-provider`）注册 `kind: custom`——复用 OpenAI 兼容 `chat/completions`
-  适配器（cos-llm 的 `openai` feature），`config.defaults` 可下沉公共字段（含 `${ENV_VAR}` 展开）。
+  适配器（cos-llm 的 `adapters` feature），`config.defaults` 可下沉公共字段（含 `${ENV_VAR}` 展开）。
   覆盖"任意 OpenAI 兼容端点、不想写代码"的场景；"新适配器协议"仍走代码级路径
   （适配器 crate + 封装插件，plugin-opencode 范本）。两条路径并列，插件树其余部分零改动。
 - **deepseek-provider 插件（官方 API 也是一个 Provider 插件）**：新增 `plugins/plugin-deepseek`
   （yml 工厂名 `deepseek-provider`）注册 `kind: deepseek`——DeepSeek 官方 API
-  （`api.deepseek.com`，OpenAI 兼容）同样复用 cos-llm 的 `openai` feature 适配器（流式稳定 +
+  （`api.deepseek.com`，OpenAI 兼容）同样复用 cos-llm 的 `adapters` feature 适配器（流式稳定 +
   `reasoning_content` → Thinking 块）。内置模型目录**无分组**（官方就
   `deepseek-v4-flash` / `deepseek-v4-pro` 两个模型，无需套餐/家族分组——`group:` 在此
   Provider 上报错并列出可用模型）；插件级 `api_key`（`${ENV_VAR}` 展开）、
@@ -240,7 +242,7 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   plugin-llm 零改动——插件化装配的兑现。
 - **适配器并入 cos-llm（feature 门控；原 cos-llm-openai crate 删除）**：仅有一个真实
   适配器（OpenAI 兼容）时，独立 crate 的边际价值低于"少一个目录"的直观性——把
-  `build_openai`/`OpenAiAdapter` 移入 `cos-llm/src/openai.rs`，由 **`openai` feature**
+  `build_openai`/`OpenAiAdapter` 移入 `cos-llm/src/openai.rs`，由 **`adapters` feature**
   （默认关，随 feature 引入 reqwest/tokio）门控；三个 Provider 封装插件与
   cos-test-support 开启该 feature。**代价（记录在案）**：feature 在 workspace 叠加
   生效，宿主二进制实际总是带上 reqwest+TLS（名义 lean）；接缝 crate 从此"默认零网络
@@ -268,3 +270,172 @@ cos-core 公开 API 一律返回 `CoreError`（thiserror）；插件内部实现
   - **未来路径（记录，不承诺）**：进入运行时插件管理阶段时——先做宿主服务可
     inject（小步）；再评估服务变更事件 + 自动重载（届时 tier 降级为纯文档性软约束，
     硬顺序由重载语义接管）。
+- **对齐 dsh 的 LLM 边界协议（LlmError 稳定码 + finish 分片）**：对比
+  `docs/develop/practice/llm-adapter`（dsh 把适配器注册进 `llm` 服务的模型）后落地
+  两项（架构仍保持"装配期目录校验 + 静态 chains"，不引入请求级模型路由）：
+  - **`LlmError` 结构化**：`Failure(String)` → `{ code: LlmErrorCode, message,
+    facts?: ProviderFacts }`（对齐 dsh 的 LlmError code/provider facts）。码分类：
+    InvalidRequest/Auth/Quota/RateLimit/Server/Network/Protocol/NotFound/Other；
+    facts 带 HTTP status（429 可扩展 retryAfterMs）。**`is_retryable()`**（Server/
+    RateLimit/Network/Other 可重试）同时驱动两处兜底：适配器内流式→非流式重试、
+    **FallbackAdapter 切换决策**（4xx 鉴权/配额/参数/协议/路由不切换——切下一个也
+    会同样失败，原样传播；5xx/限流/网络才切）。
+  - **`ChunkDelta::Finish { reason }`**（Stop/ToolCalls）：适配器流尾显式发出终结
+    分片（对齐 dsh 的 finish chunk）——agent loop 的"是否执行工具轮"决策显式化
+    （仍以 ToolUse 块为准，finish 兜底空工具块防死循环）；**控制分片不入会话日志**
+    （JSONL/事件计数不变）、RPC 转发跳过。脚本化 mock 不发 finish → 消费方按 Stop
+    兜底（协议向后兼容）。
+  - 未采纳（记录）：dsh 的请求级模型路由（`GenerateOptions.provider/model` +
+    `resolveModel` 运行时解析）与响应式适配器注册（disposer/HMR）——与"装配期
+    fail loud + 静态装配"哲学冲突，已在"dsh 依赖驱动加载的对齐分析"条目内记录。
+- **api style 分发（"把 api style 适配交给插件"）**：`LlmRegistry`/`cos-llm` 增加
+  **风格注册表**（`cos_llm::register_api_style(style, build)`，全局；`api_styles()`
+  查询）与**分发构建函数** [`cos_llm::build_with_style`]——Provider 插件注册 kind 时
+  用它作 `build`，合并配置里的 `api_style` 字段决定走哪个风格构建器（缺省 `"openai"`，
+  未知风格 fail loud 列出已注册）。内置风格随 `adapters` feature 预注册：
+  - `openai`（`/chat/completions`，原有）；
+  - `anthropic`（`/messages`：system 顶层、tool_result 在 user 角色、SSE
+    content_block_* 事件、error.type 分类）；
+  - `responses`（`/responses`：instructions 顶层、input_text/function_call 块、
+    output_text.delta/function_call_arguments.delta 事件）。
+  三者共用错误码分类与"可重试失败 → 非流式兜底"语义。**模型目录按模型声明风格**
+  （opencode-go 官方文档：GLM/Kimi/DeepSeek/MiMo/Hy3 → openai、MiniMax/Qwen →
+  anthropic、Grok/GPT → responses——同一 base_url，路径由风格决定）；custom-provider
+  条目/默认也可声明 `api_style`。**第三方风格适配器插件** = 新 crate 实现
+  `fn(&Value) -> Result<Arc<dyn LlmAdapter>, LlmError>` + apply 里
+  `register_api_style` 注册，任何 Provider 的目录条目即可选用。
+- **模型清单拉取（`fetch_models`）**：`cos_llm::fetch_models(endpoint, api_style)`
+  （阻塞式，opt-in）GET Provider 端点（如 `https://opencode.ai/zen/go/v1/models`），
+  容忍常见响应形状（字符串数组 / `{data|models: [...]}` / `{data: [{id}]}`），映射为
+  目录条目并入（内置 < 拉取 < `config.models` 显式覆盖）；网络失败 fail loud。
+  plugin-opencode 配置 `models_endpoint` + `models_api_style` 启用——模型清单可
+  **从 Provider 拉取而非只靠代码维护**，两类来源并存（dsh `listModels`/`discoverModels`
+  的静态等价物）。
+
+## B 形态清单一等公民（P10，dlopen）
+
+（对应 `docs/b-abi.md` §5 / §10.6；实现 `crates/cos-loader/src/dlopen.rs` + `compose.rs`。）
+
+- **动机**：P8/P9 的 dlopen 插件是"二等公民"——不参与 loader 依赖图（无法声明
+  inject/provide），`get_service` 也不裁剪（任何服务按名可取）。这与 A 形态
+  "声明式依赖 + 能力最小化"的哲学不一致；B 形态清单一等公民是生态开放的前提
+  （用户优先序③"先处理 leak_cstr/host_free 再谈生态开放"）。
+- **清单符号 `cos_plugin_manifest`**（`cos-contract`，`API_VERSION` 0.3.0 → 0.4.0）：
+  B 形态插件导出 `fn() -> *const c_char`，返回 NUL 结尾 JSON
+  （`{id?, version?, api?, inject?: [...], provide?: [...]}`）。**缺失符号 = 空清单 =
+  旧行为**（不参与依赖图、不裁剪能力）——向后兼容，旧 cdylib 照常装载。
+- **依赖图参与**：loader 把清单 `inject`/`provide` 并入 `compose::plan` 的拓扑排序
+  （与 A 形态同等约束：缺依赖/环/重复 provide fail loud）；**dlopen 的 inject 命中
+  宿主服务（无插件 provider）不构成 MissingDependency**——宿主桥服务（tools/llm 等）
+  对 B 形态视为恒就绪（A 形态"宿主服务边界"决策不变，两侧语义差记录在案）。
+- **能力裁剪**：`get_service` 只对清单 `inject` 声明的服务返回句柄，未注入的服务
+  返回空指针（插件侧 fail loud）——"最小能力"跨 A/B 形态一致；事件/工具注册等
+  通用能力不受裁剪影响（清单只管服务面）。
+- **装配可见**：`--dump-config` 输出 dlopen 条目的 `inject`/`provide`（与装载共用
+  plan 路径，输出 = 装载）。
+- **试点更新**：`plugin-todo-dlopen` 导出清单（`inject: ["todo-store"]`）——e2e
+  （`tests/dlopen_e2e.rs`）断言依赖图生效（todo 先于 dlopen apply、卸载逆序
+  dlopen 先于 todo）、dump 含清单；工具改名 `dlopen_todo`（与 A 形态 `todo_write`
+  区分）。
+- **P10 未做（记录在案，见 b-abi.md §10.6）**：`cos_plugin_validate` 入口；服务句柄
+  按名缓存与跨插件复用优化；验签/哈希校验、沙箱、运行时重载（PLAN §0 非目标）。
+
+## B 形态资源生命周期（P11，leak_cstr / host_free）
+
+（对应 `docs/b-abi.md` §10.7；实现 `crates/cos-loader/src/dlopen.rs` + `cos-tools`。
+生态开放前置——用户优先序③"先处理 leak_cstr/host_free 再谈生态开放"。）
+
+- **动机**：P8 的两项简化是生态开放的拦路虎——`leak_cstr` 每次调用 `Box::leak`
+  一份（`emit` 循环高频事件名无限增长，卸载/重载不回收）；`free` 空操作（句柄
+  API 名不副实，插件无法提前撤销资源）。B 形态对第三方开放前必须处理干净。
+- **字符串驻留区**：`PluginHostState.strings`（`Mutex<Vec<Box<str>>>`）**去重驻留**
+  跨边界 `&'static str`（事件名/工具名/描述——`EventName` 与 `Tool` trait 都要求
+  `'static`），随插件状态 drop（卸载）释放。**安全不变量 = 字段顺序**：`ctx`
+  （首字段，drop 时 `Fiber::Drop` 逆序注销监听器与工具注销效果）必须先于
+  `strings`（末字段）drop——消费者引用消失后才释放字符串；apply 失败路径
+  **保留状态到实例 drop**（不再提前置 None：失败前注册的监听器/工具持有驻留
+  字符串，提前释放会悬垂）。
+- **`free` 诚实回收**：`handles: HashMap<Handle, HandleKind>`（`Listener/Effect/Tool`
+  各持 [`EffectHandle`] 克隆）——`free` 按句柄分发：监听/效果提前 dispose、工具
+  注销；未知/外来/重复/0 句柄 = 幂等无操作（跨插件句柄天然隔离：注册表按状态）。
+  与 fiber 卸载路径幂等共存（dispose 幂等，fiber 克隆随后无操作）。
+- **工具自动注销（无僵尸工具）**：`host_register_tool` 成功后把**注销效果**挂到
+  插件 fiber——卸载/回滚自动 `ToolRegistry::unregister`（新增）；修复旧缺陷：
+  卸载后工具仍留注册表（执行回调指向已卸载库 = 潜在 UAF），且重载同名工具
+  duplicate 失败。tools 服务缺失/同名重复 → 返回 0（fail loud，插件侧检查）。
+- **空指针守卫**：`emit` 载荷 / `register_tool` 参数 JSON 空指针安全处理；fn 指针
+  （callback/disposer/execute）Rust 保证非空（`useless_ptr_null_checks`），不设守卫。
+- **插件侧零泄漏**：`plugin-todo-dlopen` 的 `Box::leak` `cstr()` 辅助改为 C 字符串
+  字面量（`c"..."` / `cr#"..."#`）。
+- **验证**：cos-loader 单测 7 项（free 提前注销监听/效果、外来句柄幂等、free 注销
+  工具、fiber dispose 注销工具 + 重载再注册、字符串去重驻留、空指针安全、
+  效果提前 dispose）；e2e 全链路断言不变。
+
+## B 形态暴露面审计（P12）
+
+（对应 `docs/b-abi.md` §12；用户优先序④"审计 B 形态其余对外暴露面"。生态开放前
+的收尾审计：逐面核对"契约声明 vs 实现"，修复三处空转/缺陷，其余记录在案。）
+
+- **`cos_plugin_validate` 死契约 → 兑现**：契约声明了导出符号与签名（b-abi §4、
+  third-party-dev §5.2 均列出），但 loader 从不查找/调用——第三方实现了也是静默
+  无操作。修复：`DlopenPlugin` 解析可选符号，apply **之前**调用（配置 JSON + 错误
+  缓冲）；非零返回 → `LoadError::DlopenValidate`（fail loud，插件写的错误文本透出）；
+  缺失 = 跳过（向后兼容）。薄壳导出 `cos_plugin_validate`（非对象配置 →
+  `ConfigInvalid`），e2e `dlopen_validate_rejects_bad_config` 断言启动失败 + 错误文本。
+- **清单 `api` 字段声明不兑现 → 强制**：`PluginManifest::api_version()` 只在测试里
+  存在，装载路径从不校验。修复：`check_manifest_api`（load 时调用）——解析出版本
+  且不兼容 → `AbiMismatch`（fail loud，可读错误）；缺省/非法字符串 = 按当前版本
+  对待（契约 docstring 语义）。单测 `manifest_api_field_is_enforced` 覆盖
+  缺省/一致/旧版/不兼容/非法五种。
+- **`ErrorCode::from_i32` 缺 `CallFailed`(7)**：`service_call` 返回 7 但映射落
+  `_ => None`，b-abi §8 错误码表同样漏 7（文档漂移）。修复：补 `7 => CallFailed` +
+  往返测试 + §8 文档。
+- **RAII 卸载顺序潜伏缺陷（P11 起，审计实测 0xC0000005）**：`DlopenPlugin` 字段序
+  `_library` 先于 `state`——显式卸载路径（`LoadedApp::dispose`/`dispose_async`）
+  先 fiber 逆序注销再 drop 实例，顺序正确；但**纯 RAII 路径**（装载后装配失败
+  错误返回、未调 finish 直接 drop）库先卸载、`state.ctx` 的 `Fiber::Drop` 随后才
+  逆序执行插件 disposer → **执行已卸载库的代码** → 访问违例（写违例弹窗实测）。
+  e2e 从未触发（总走 `finish` 的显式 dispose）。修复：`impl Drop for DlopenPlugin`
+  在字段 drop（库卸载）前兜底 dispose 状态 fiber（幂等，显式路径不受影响）；
+  回归 e2e `dlopen_raii_unload_without_llm_fails_cleanly`（无 LLM → 干净失败 +
+  marker 文件证明 disposer 在库卸载前已执行）。P11-era 旧 cdylib（无 validate）
+  向后兼容装载验证通过。
+- **审计矩阵其余项（记录在案）**：HostApi 字符串参数空指针守卫 P11 已全；fn 指针
+  Rust 保证非空（不设守卫）；error_buf/result_buf 越界写 = 无沙箱下的固有风险
+  （非目标，契约已声明"不扩容"）；**B 提供服务给 A 形态是已知差距**（`provide`
+  仅声明性，B 无法注册 JsonBridge/类型化服务——未来可加宿主函数 `register_bridge`）；
+  热重载非目标（PLAN §0）。
+
+## cordis.yml patch 层叠（P13，P2 修订）
+
+（实现 `crates/cos-loader/src/profile.rs` + `--patch` CLI；语义参考 dsh 的
+`cordis.patch.yml` 体系——`packages/boot/app-boot/src/profile.ts` +
+`vendor/include/src/index.ts` 的 `applyEntryPatches`，静态装载变体。）
+
+- **动机（用户拍板）**：B 形态插件作为第三方插件，应经 `cordis.patch.yml` 与主
+  `cordis.yml` 组装成完整插件列表——主 yml 不再包含所有插件，**完整列表需要在
+  其他地方列出**。dsh 的做法：profile `package.json` 的 `dsh.profile.bundles`
+  名单 + 各层 patch 文件组合；权威输出 = `--dump-config`（与装载共用
+  `applyEntryPatches` 同一条路径，"dump 永不偏离装载"）。
+- **主 yml 双形态**：顶层数组（v1 兼容，等价对象形态省略包装）或对象
+  `{ patch?: [路径], entries?: [条目] }`——`patch:` 声明相对主 yml 目录解析，
+  主 yml 保持"完整清单声明处"心智（条目 + patch 引用 = 完整集合）。
+- **层叠顺序**（后覆盖先，按 id/name 定位）：主 yml 条目 → 主 yml `patch:` 声明
+  文件（按序）→ 同目录 `cordis.patch.yml`（**自动应用**；被显式声明时去重防双应用）
+  → CLI `--patch <file>`（可多次，按 argv 顺序，相对 cwd）。
+- **patch 语义**（对标 dsh，**fail loud 变体**）：`{ id, config }` 覆盖配置、
+  `{ id, disabled }` 禁用、`{ id, name }` 名称校验（只校验不覆盖，同 dsh）、
+  `{ insert: [...] }` 追加（无 id = 列表尾；**带 id = v1 无 group，fail loud**）；
+  后 patch 可定位先 patch insert 的条目（同层增量索引）。**定位不到目标 / 名称
+  不匹配 → 启动失败**（错误列出可用条目 id）——dsh warn+skip 是热重载的妥协
+  （patch 文件热改、临时缺行可容忍），cos 静态装载没有这个理由，fail loud 与
+  "零配置直接启动失败"哲学一致（用户拍板）。
+- **来源标注**：Entry 增加 `source`（`cordis.yml` / patch 文件路径，insert 条目标
+  注注入来源）；`--dump-config` 每条目输出 `source`——**完整列表的权威处**。
+- **第三方交付形态**：第三方包 = cdylib + 自带 `cordis.patch.yml`（insert 自己的
+  dlopen 条目）；用户经主 yml `patch:` 或 CLI `--patch` 启用（详见
+  third-party-dev.md §5.4.1）。
+- **验证**：profile 单测 6 项（双形态/覆盖/insert/定位失败/名称校验/增量索引/
+  patch 形状）+ 集成测试 4 项（层叠顺序、自动应用去重、第三方 insert、缺失文件
+  fail loud）+ e2e `dlopen_patch_injects_third_party_plugin`（第三方 patch 注入
+  dlopen 条目 → dump 完整列表 + source 标注 + 清单参与依赖图）。

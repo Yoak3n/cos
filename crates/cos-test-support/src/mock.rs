@@ -2,19 +2,24 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cos_llm::{LlmAdapter, LlmError, LlmRequest, LlmStream, StreamChunk};
+use cos_llm::{LlmAdapter, LlmError, LlmErrorCode, LlmRequest, LlmStream, StreamChunk};
 
-/// 一次预设回复：按顺序流出的 chunk 序列。
+/// 一次预设回复：按顺序流出的 chunk 序列（或一条脚本化错误）。
 #[derive(Debug, Clone)]
 pub struct MockReply {
     /// 依次产出的 chunks。
     pub chunks: Vec<StreamChunk>,
+    /// 脚本化错误（有则本次调用直接流出错，忽略 chunks）。
+    pub error: Option<LlmError>,
 }
 
 impl MockReply {
     /// 由 chunks 构造预设回复。
     pub fn new(chunks: Vec<StreamChunk>) -> Self {
-        Self { chunks }
+        Self {
+            chunks,
+            error: None,
+        }
     }
 
     /// 由文本构造单块预设回复（文本自动按字符切分为多块，模拟流式）。
@@ -24,6 +29,15 @@ impl MockReply {
                 .chars()
                 .map(|c| StreamChunk::text(c.to_string()))
                 .collect(),
+            error: None,
+        }
+    }
+
+    /// 脚本化错误回复（fallback 分类测试用：`Auth` 不可切换、`Server` 可切换等）。
+    pub fn error(code: LlmErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            chunks: Vec::new(),
+            error: Some(LlmError::new(code, message)),
         }
     }
 }
@@ -65,6 +79,10 @@ impl LlmAdapter for MockAdapter {
         let index = self.cursor.fetch_add(1, Ordering::SeqCst);
         match self.script.get(index) {
             Some(reply) => {
+                if let Some(error) = &reply.error {
+                    let error = error.clone();
+                    return Box::pin(futures::stream::once(async move { Err(error) }));
+                }
                 let chunks: Vec<Result<StreamChunk, LlmError>> =
                     reply.chunks.clone().into_iter().map(Ok).collect();
                 Box::pin(futures::stream::iter(chunks))
@@ -75,7 +93,7 @@ impl LlmAdapter for MockAdapter {
                     self.script.len()
                 );
                 Box::pin(futures::stream::once(async move {
-                    Err(LlmError::Failure(message))
+                    Err(LlmError::new(LlmErrorCode::Other, message))
                 }))
             }
         }

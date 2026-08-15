@@ -29,6 +29,7 @@ fn base_config(config_path: Option<String>) -> RunConfig {
         llm: None,
         agent_llm: None,
         agent_driver: None,
+        patch_files: Vec::new(),
     }
 }
 

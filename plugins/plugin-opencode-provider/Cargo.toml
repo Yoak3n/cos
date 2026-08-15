@@ -7,7 +7,7 @@ description = "OpenAI 兼容 chat/completions Provider 的运行时插件（声�
 
 [dependencies]
 cos-core = { path = "../../crates/cos-core", version = "0.1.0" }
-cos-llm = { path = "../../crates/cos-llm", version = "0.1.0", features = ["openai"] }
+cos-llm = { path = "../../crates/cos-llm", version = "0.1.0", features = ["adapters"] }
 cos-loader = { path = "../../crates/cos-loader", version = "0.1.0" }
 inventory.workspace = true
 serde.workspace = true

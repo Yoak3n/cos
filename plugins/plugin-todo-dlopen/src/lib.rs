@@ -1,9 +1,10 @@
-//! B 形态薄壳试点（P8，P9 服务直连演示）：独立 cdylib 形式的 todo 工具。
+//! B 形态薄壳试点（P8，P9 服务直连演示，P12 validate 演示）：独立 cdylib 形式的
+//! todo 工具。
 //!
-//! 导出 `cos_plugin_abi_version` / `cos_plugin_apply`；apply 时经 HostApi 注册
-//! `todo_write` 工具 + 卸载效果（释放状态、写 marker 文件验证 disposer 调用链）+
-//! 事件（验证 emit 桥）。工具执行 = C 回调：解析 ToolRun JSON → 更新状态 →
-//! 把 ToolOutcome JSON 写入宿主缓冲。
+//! 导出 `cos_plugin_abi_version` / `cos_plugin_apply`（+ 可选 `cos_plugin_validate`
+//! 配置预校验，P12）；apply 时经 HostApi 注册 `todo_write` 工具 + 卸载效果
+//! （释放状态、写 marker 文件验证 disposer 调用链）+ 事件（验证 emit 桥）。
+//! 工具执行 = C 回调：解析 ToolRun JSON → 更新状态 → 把 ToolOutcome JSON 写入宿主缓冲。
 //!
 //! P9 服务直连演示：apply 时自持 `ctx`/`host` 指针（宿主保证与插件实例同生命周期），
 //! 工具回调内经 `get_service("tools")` + `service_call("list")` 查询宿主工具清单，
@@ -37,6 +38,17 @@ pub extern "C" fn cos_plugin_abi_version() -> u32 {
     API_VERSION.encode()
 }
 
+/// 导出：插件清单（P10 清单一等公民）——`inject: ["tools", "todo-store"]`（服务
+/// 直连依赖 + 声明依赖 plugin-todo 提供的 todo-store，参与依赖图排序）、
+/// `provide: ["dlopen-todo"]`（声明式产出）。宿主据此建依赖边并**裁剪 HostApi
+/// 能力**：get_service 只对清单注入的服务生效。
+#[unsafe(no_mangle)]
+pub extern "C" fn cos_plugin_manifest() -> *const c_char {
+    // 字节串 + 显式 NUL（宿主按 CStr 读取，&str 不保证 NUL 结尾）
+    static MANIFEST: &[u8] = b"{\"id\":\"todo-dlopen\",\"version\":\"0.1.0\",\"api\":\"0.4.0\",\"inject\":[\"tools\",\"todo-store\"],\"provide\":[\"dlopen-todo\"]}\0";
+    MANIFEST.as_ptr() as *const c_char
+}
+
 /// 导出：apply（HostApi 桥 + 配置 JSON + 错误缓冲）。
 ///
 /// # Safety
@@ -59,6 +71,40 @@ pub unsafe extern "C" fn cos_plugin_apply(
         Err(_) => {
             write_text(error_buf, error_len, "插件内部 panic");
             ErrorCode::ApplyFailed as i32
+        }
+    }
+}
+
+/// 导出（可选，P12）：配置预校验——宿主在 apply 之前调用；非零返回 → 装载失败
+/// （fail loud，错误文本入 error_buf）。薄壳规则：配置必须是 JSON 对象
+/// （`marker` 可选字符串），否则 `ConfigInvalid`。
+///
+/// # Safety
+/// `config_json` 必须是 NUL 结尾 UTF-8（可为空指针，视为空配置）；`error_buf`
+/// 由宿主分配、容量为 `error_len`，最多写入 `error_len - 1` 字节 + NUL。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cos_plugin_validate(
+    config_json: *const c_char,
+    error_buf: *mut c_char,
+    error_len: usize,
+) -> i32 {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let config = read_json(config_json).unwrap_or(Value::Null);
+        if !config.is_object() {
+            write_text(
+                error_buf,
+                error_len,
+                "配置必须是 JSON 对象（可含可选 marker 字段）",
+            );
+            return ErrorCode::ConfigInvalid as i32;
+        }
+        ErrorCode::Ok as i32
+    }));
+    match result {
+        Ok(code) => code,
+        Err(_) => {
+            write_text(error_buf, error_len, "validate panic");
+            ErrorCode::ConfigInvalid as i32
         }
     }
 }
@@ -86,17 +132,12 @@ fn apply(
         count: 0,
         host: Some((ctx, host)),
     }));
-    let name = cstr("todo_write");
-    let description = cstr("写入任务清单（B 形态薄壳）");
-    let parameters = cstr(
-        r#"{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string"}}}}},"required":["todos"]}"#,
-    );
     let handle = unsafe {
         (host.register_tool)(
             ctx,
-            name.as_ptr(),
-            description.as_ptr(),
-            parameters.as_ptr(),
+            c"dlopen_todo".as_ptr(),
+            c"写入任务清单（B 形态薄壳）".as_ptr(),
+            cr#"{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string"}}}}},"required":["todos"]}"#.as_ptr(),
             todo_execute,
             state as *mut c_void,
         )
@@ -115,7 +156,7 @@ fn apply(
 
     // 3. 事件（验证 emit 桥）
     unsafe {
-        (host.emit)(ctx, cstr("dlopen/todo-ready").as_ptr(), cstr("{}").as_ptr());
+        (host.emit)(ctx, c"dlopen/todo-ready".as_ptr(), c"{}".as_ptr());
     }
     0
 }
@@ -166,7 +207,7 @@ extern "C" fn todo_execute(
 fn tools_count(host: Option<(HostCtx, *const HostApi)>) -> Option<usize> {
     let (ctx, host_ptr) = host?;
     let host = unsafe { &*host_ptr };
-    let service = unsafe { (host.get_service)(ctx, cstr("tools").as_ptr()) };
+    let service = unsafe { (host.get_service)(ctx, c"tools".as_ptr()) };
     if service.is_null() {
         return None;
     }
@@ -175,8 +216,8 @@ fn tools_count(host: Option<(HostCtx, *const HostApi)>) -> Option<usize> {
         (host.service_call)(
             ctx,
             service,
-            cstr("list").as_ptr(),
-            cstr("{}").as_ptr(),
+            c"list".as_ptr(),
+            c"{}".as_ptr(),
             buf.as_mut_ptr() as *mut c_char,
             buf.len(),
         )
@@ -220,10 +261,4 @@ fn write_text(buf: *mut c_char, len: usize, text: &str) {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, copy_len);
         *buf.add(copy_len) = 0;
     }
-}
-
-/// 静态 C 字符串（泄漏一次、进程内复用；apply 期调用次数有限）。
-fn cstr(text: &'static str) -> &'static std::ffi::CStr {
-    let leaked: &'static str = Box::leak(format!("{text}\0").into_boxed_str());
-    CStr::from_bytes_with_nul(leaked.as_bytes()).expect("构造的 C 字符串合法")
 }

@@ -8,25 +8,198 @@
 //! LLM 统一管理：Provider crate 经 [`llm_factory!`] 注册工厂（inventory 静态收集），
 //! [`LlmRegistry`] 服务统一装配/按名取用/后备链（[`FallbackAdapter`] 未产出即失败自动切换）。
 //!
-//! **`openai` feature**（默认关）：OpenAI 兼容 `chat/completions` 适配器
-//! （[`build_openai`] / [`OpenAiAdapter`]，原 cos-llm-openai crate，P9 并入）——随
-//! feature 引入 reqwest/tokio，只有 Provider 封装插件开启；默认特性零网络依赖。
+//! **`adapters` feature**（默认关）：内置协议适配器族——OpenAI 兼容 `chat/completions`
+//! （[`build_openai`]，原 cos-llm-openai crate，P9 并入）、Anthropic Messages
+//! （[`build_anthropic`]）、OpenAI Responses（[`build_responses`]）。**api style 分发**：
+//! Provider 插件注册 kind 时用 [`build_with_style`]，合并配置里的 `api_style` 字段决定
+//! 走哪个风格构建器（默认 `"openai"`）；[`register_api_style`] 可注册自定义风格
+//! （第三方风格适配器插件）。随 feature 引入 reqwest/tokio，只有 Provider 封装插件开启。
 
 #![warn(missing_docs)]
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cos_core::{Context, CoreError, CoreResult, JsonBridge, Service};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "openai")]
+#[cfg(feature = "adapters")]
 pub mod openai;
 
-#[cfg(feature = "openai")]
+#[cfg(feature = "adapters")]
+pub mod anthropic;
+
+#[cfg(feature = "adapters")]
+pub mod responses;
+
+#[cfg(feature = "adapters")]
 pub use openai::{OpenAiAdapter, OpenAiConfig, build_openai};
+
+#[cfg(feature = "adapters")]
+pub use anthropic::{AnthropicAdapter, AnthropicConfig, build_anthropic};
+
+#[cfg(feature = "adapters")]
+pub use responses::{ResponsesAdapter, ResponsesConfig, build_responses};
+
+/// 提供商工厂构建函数（配置 → 适配器）。
+pub type LlmFactoryFn = fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>;
+
+/// **api style 注册表**（全局）：风格名 → 构建函数。内置风格随 `adapters` feature
+/// 预注册（`openai` / `anthropic` / `responses`）；第三方风格适配器插件可经
+/// [`register_api_style`] 扩展——模型目录条目声明 `api_style: <风格>` 即按此分发。
+static STYLES: OnceLock<Mutex<BTreeMap<&'static str, LlmFactoryFn>>> = OnceLock::new();
+
+fn styles() -> &'static Mutex<BTreeMap<&'static str, LlmFactoryFn>> {
+    STYLES.get_or_init(|| Mutex::new(builtin_styles()))
+}
+
+#[cfg(feature = "adapters")]
+fn builtin_styles() -> BTreeMap<&'static str, LlmFactoryFn> {
+    let mut map: BTreeMap<&'static str, LlmFactoryFn> = BTreeMap::new();
+    map.insert("openai", build_openai);
+    map.insert("anthropic", build_anthropic);
+    map.insert("responses", build_responses);
+    map
+}
+
+#[cfg(not(feature = "adapters"))]
+fn builtin_styles() -> BTreeMap<&'static str, LlmFactoryFn> {
+    BTreeMap::new()
+}
+
+/// 注册一个 **api style** 构建函数（重复注册 → `Err`）。
+///
+/// "把 api style 适配交给插件"的入口：第三方风格适配器插件在 apply 里调用本函数
+/// 注册自己的风格，然后任何 Provider 的模型目录条目声明 `api_style: "<风格>"` 即
+/// 按此构建（同 kind 内不同模型可各用不同风格）。构建函数接收**合并后**的配置
+/// （三级默认合并已完成），自行负责路径后缀（如 `/messages`、`/responses`）。
+pub fn register_api_style(style: &'static str, build: LlmFactoryFn) -> Result<(), String> {
+    let mut map = styles().lock().unwrap();
+    if map.contains_key(style) {
+        return Err(format!("api style '{style}' 已注册"));
+    }
+    map.insert(style, build);
+    Ok(())
+}
+
+/// 全部已注册 api style（排序稳定；错误提示与查询用）。
+pub fn api_styles() -> Vec<&'static str> {
+    styles().lock().unwrap().keys().copied().collect()
+}
+
+/// **api style 分发构建函数**：读取（合并后的）配置里的 `api_style` 字段（缺省
+/// `"openai"`），按 [`api_styles`] 注册表分发到对应风格构建器；未知风格 → fail
+/// loud 列出已注册风格。Provider 封装插件注册 kind 时用它作 `build`——同一 kind
+/// 下不同模型可各自声明 `api_style`（如 opencode-go 的 chat/completions、messages、
+/// responses 三种端点）。
+pub fn build_with_style(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError> {
+    let api_style = config
+        .get("api_style")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("openai");
+    // 锁内只查不构造（错误分支要查 api_styles()——同一把锁，锁外做，避免自锁）
+    let build = {
+        let styles = styles().lock().unwrap();
+        styles.get(api_style).copied()
+    };
+    match build {
+        Some(build) => build(config),
+        None => Err(LlmError::new(
+            LlmErrorCode::InvalidRequest,
+            format!(
+                "未知 api style '{api_style}'；已注册 styles: {}（Provider 插件可经 \
+                 cos_llm::register_api_style 扩展自定义风格）",
+                api_styles().join(", ")
+            ),
+        )),
+    }
+}
+
+/// 按 HTTP 状态码分类错误（稳定机器码 + status 事实）：401/403 鉴权、402 配额、
+/// 429 限流、其余 4xx 参数、5xx 服务端、其他未分类。各风格适配器共用。
+#[cfg(feature = "adapters")]
+pub(crate) fn classify_status(status: u16, text: &str) -> LlmError {
+    let code = match status {
+        401 | 403 => LlmErrorCode::Auth,
+        402 => LlmErrorCode::Quota,
+        429 => LlmErrorCode::RateLimit,
+        400..=499 => LlmErrorCode::InvalidRequest,
+        500..=599 => LlmErrorCode::Server,
+        _ => LlmErrorCode::Other,
+    };
+    LlmError::http(
+        code,
+        status,
+        format!("HTTP {status}: {}", truncate(text, 300)),
+    )
+}
+
+/// 从 Provider 端点**拉取可用模型清单**（阻塞式；Provider 插件 apply 期调用，
+/// opt-in 配置如 `models_endpoint`）。GET `endpoint`，容忍常见响应形状——字符串数组、
+/// `{data: [...]}` / `{models: [...]}` / `{data: [{id, ...}]}`；每个模型转为
+/// [`ModelDefaults`]（`api_style` 由调用方给定，其余默认字段留空 → `build` 三级
+/// 合并时落到插件级默认）。失败 → `Err`（fail loud：显式开启的拉取不应静默降级）。
+#[cfg(feature = "adapters")]
+pub fn fetch_models(endpoint: &str, api_style: &str) -> Result<Vec<ModelDefaults>, String> {
+    let response = reqwest::blocking::get(endpoint)
+        .map_err(|error| format!("模型清单拉取失败（{endpoint}）: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "模型清单拉取失败（{endpoint}）: HTTP {}",
+            response.status()
+        ));
+    }
+    let value: serde_json::Value = response
+        .json()
+        .map_err(|error| format!("模型清单不是合法 JSON: {error}"))?;
+    // 提取 id 列表：字符串数组 / {data|models: [...]} / 条目对象取 id 字段
+    let items: Vec<&serde_json::Value> = match &value {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        _ => {
+            let container = ["data", "models", "model"]
+                .iter()
+                .find_map(|key| value.get(*key))
+                .unwrap_or(&value);
+            container
+                .as_array()
+                .map(|items| items.iter().collect())
+                .unwrap_or_default()
+        }
+    };
+    let mut models = Vec::new();
+    for item in items {
+        let id = match item {
+            serde_json::Value::String(id) => id.clone(),
+            other => other
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("模型清单条目缺少 id: {other}"))?,
+        };
+        if id.is_empty() {
+            continue;
+        }
+        models.push(ModelDefaults {
+            model: id,
+            group: None,
+            defaults: serde_json::json!({ "api_style": api_style }),
+        });
+    }
+    Ok(models)
+}
+
+/// 截断过长错误文本（避免整页回显）。
+#[cfg(feature = "adapters")]
+pub(crate) fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let head: String = text.chars().take(max).collect();
+        format!("{head}…")
+    }
+}
 
 /// 消息角色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +357,16 @@ pub enum Message {
     },
 }
 
+/// 流终结原因（显式协议化：消费方不必靠"流结束 + 有无 ToolUse 块"推断）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FinishReason {
+    /// 正常结束（模型产出完整回复）。
+    Stop,
+    /// 请求执行工具（流内已产出 ToolUse 块）。
+    ToolCalls,
+}
+
 /// 流式增量块。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -202,6 +385,12 @@ pub enum ChunkDelta {
     ToolUse {
         /// 调用内容。
         call: ToolCall,
+    },
+    /// **终结分片**：流的最后一块，显式给出结束原因（对齐 dsh 的 finish chunk）。
+    /// 适配器未发出时（如脚本化 mock）消费方按 `Stop` 兜底。
+    Finish {
+        /// 结束原因。
+        reason: FinishReason,
     },
 }
 
@@ -249,12 +438,88 @@ pub struct LlmRequest {
     pub tools: Vec<serde_json::Value>,
 }
 
-/// LLM 适配器边界错误。
+/// LLM 适配器边界错误的**稳定机器码**：消费方按码分类决策（fallback 是否切换、
+/// 诊断/重试策略），不依赖人读文本（对齐 dsh 的 LlmError code）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LlmErrorCode {
+    /// 请求构造/参数错误（重试不会改善）。
+    InvalidRequest,
+    /// 鉴权失败（HTTP 401/403 等）。
+    Auth,
+    /// 配额/余额不足（HTTP 402 等）。
+    Quota,
+    /// 限流（HTTP 429；[`ProviderFacts::retry_after_ms`] 可带）。
+    RateLimit,
+    /// 服务端错误（HTTP 5xx 等）。
+    Server,
+    /// 网络层失败（连接/超时/DNS）。
+    Network,
+    /// 协议解析失败（响应形状不符）。
+    Protocol,
+    /// 路由解析失败（未知提供方/模型/后备链）。
+    NotFound,
+    /// 其他/未分类。
+    Other,
+}
+
+/// provider 侧可序列化事实（错误诊断与策略用；对齐 dsh 的 LlmError provider facts）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderFacts {
+    /// 观测到的 HTTP 状态码。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// 提供方要求的重试延迟（毫秒）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+}
+
+/// LLM 适配器边界错误：稳定机器码 + 人读文本 + 可选 provider 事实。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-pub enum LlmError {
-    /// 适配器失败（message 为人读文本）。
-    #[error("{0}")]
-    Failure(String),
+#[error("{message}")]
+pub struct LlmError {
+    /// 稳定机器码（分类决策用）。
+    pub code: LlmErrorCode,
+    /// 人读文本。
+    pub message: String,
+    /// 可选的 provider 侧事实。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts: Option<ProviderFacts>,
+}
+
+impl LlmError {
+    /// 构造错误（无 provider 事实）。
+    pub fn new(code: LlmErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            facts: None,
+        }
+    }
+
+    /// 构造带 HTTP 状态码事实的错误。
+    pub fn http(code: LlmErrorCode, status: u16, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            facts: Some(ProviderFacts {
+                status: Some(status),
+                retry_after_ms: None,
+            }),
+        }
+    }
+
+    /// 是否**可重试/可切换**（后备链切换与适配器内非流式兜底共用）：服务端/限流/网络/
+    /// 未分类错误重试可能改善；鉴权/配额/参数/协议/路由错误重试不会改善（切下一个
+    /// 提供方也会同样失败 → 原样传播，不浪费一次调用）。
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self.code,
+            LlmErrorCode::Server
+                | LlmErrorCode::RateLimit
+                | LlmErrorCode::Network
+                | LlmErrorCode::Other
+        )
+    }
 }
 
 /// 流式响应：chunk 序列（`Err` 终止流）。
@@ -299,9 +564,6 @@ macro_rules! llm_factory {
         }
     };
 }
-
-/// 提供商工厂构建函数（配置 → 适配器）。
-pub type LlmFactoryFn = fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>;
 
 /// 工厂槽位：构建函数 + 默认配置 + 模型目录（`build` 时三级浅合并）。
 struct FactorySlot {
@@ -463,6 +725,18 @@ impl LlmRegistry {
         self.register_factory_with_defaults(kind, build, serde_json::Value::Null)
     }
 
+    /// 注册 **api style** 构建函数（便捷入口，同 [`crate::register_api_style`]；
+    /// 重复注册 → `Err`）。第三方风格适配器插件在 apply 里经
+    /// `ctx.get::<LlmRegistry>()?.register_api_style(...)` 注册。
+    pub fn register_api_style(&self, style: &'static str, build: LlmFactoryFn) -> CoreResult<()> {
+        crate::register_api_style(style, build).map_err(CoreError::Other)
+    }
+
+    /// 全部已注册 api style（排序稳定）。
+    pub fn api_styles(&self) -> Vec<&'static str> {
+        crate::api_styles()
+    }
+
     /// 程序化注册工厂 + **默认配置**（同名拒绝）。
     ///
     /// `build(kind, config)` 时把 `config` 浅合并到 `defaults` 之上——Provider 封装插件
@@ -595,7 +869,12 @@ impl LlmRegistry {
             .unwrap()
             .get(kind)
             .map(|slot| (slot.build, slot.defaults.clone(), slot.catalog.clone()))
-            .ok_or_else(|| LlmError::Failure(format!("未知 LLM 提供商 kind: {kind}")))?;
+            .ok_or_else(|| {
+                LlmError::new(
+                    LlmErrorCode::NotFound,
+                    format!("未知 LLM 提供商 kind: {kind}"),
+                )
+            })?;
         // 三级合并：插件级 < 模型级（按 config.model 查目录）< 条目 config
         let mut merged = slot.1;
         if let Some(model_entry) = config
@@ -671,16 +950,22 @@ impl LlmRegistry {
             .unwrap()
             .get(chain_id)
             .cloned()
-            .ok_or_else(|| LlmError::Failure(format!("未知 LLM 后备链: {chain_id}")))?;
+            .ok_or_else(|| {
+                LlmError::new(
+                    LlmErrorCode::NotFound,
+                    format!("未知 LLM 后备链: {chain_id}"),
+                )
+            })?;
         let providers = self.providers.lock().unwrap();
         let adapters: Vec<Arc<dyn LlmAdapter>> = ids
             .iter()
             .filter_map(|id| providers.get(id).cloned())
             .collect();
         if adapters.is_empty() {
-            return Err(LlmError::Failure(format!(
-                "后备链 '{chain_id}' 无可用的提供商"
-            )));
+            return Err(LlmError::new(
+                LlmErrorCode::NotFound,
+                format!("后备链 '{chain_id}' 无可用的提供商"),
+            ));
         }
         Ok(Arc::new(FallbackAdapter::new(adapters)))
     }
@@ -841,15 +1126,23 @@ impl LlmAdapter for FallbackAdapter {
                                     ));
                                 }
                                 Some(Err(error)) => {
-                                    if sent == 0 {
-                                        // 未产出即失败：记下错误，切换下一个
+                                    if sent == 0 && error.is_retryable() {
+                                        // 未产出即失败且**可重试**（服务端/限流/网络/未分类）：
+                                        // 记下错误，切换下一个
                                         last_error = Some(error);
                                         phase = FallbackPhase::Fresh {
                                             index: index + 1,
                                             sent: 0,
                                         };
+                                    } else if sent == 0 {
+                                        // 未产出即失败但**不可重试**（鉴权/配额/参数/协议/路由）：
+                                        // 切下一个也会同样失败 → 原样传播，不浪费调用
+                                        return Some((
+                                            Err(error),
+                                            (FallbackPhase::Exhausted, adapters, request, None),
+                                        ));
                                     } else {
-                                        // 已产出后失败：原样传播，不切换
+                                        // 已产出后失败：原样传播，不切换（避免内容重复）
                                         return Some((
                                             Err(error),
                                             (FallbackPhase::Exhausted, adapters, request, None),
@@ -860,8 +1153,9 @@ impl LlmAdapter for FallbackAdapter {
                                     if sent == 0 {
                                         // 空流同样视为"未产出"，可切换
                                         if last_error.is_none() {
-                                            last_error = Some(LlmError::Failure(
-                                                "空响应流（未产出任何内容）".to_string(),
+                                            last_error = Some(LlmError::new(
+                                                LlmErrorCode::Other,
+                                                "空响应流（未产出任何内容）",
                                             ));
                                         }
                                         phase = FallbackPhase::Fresh {

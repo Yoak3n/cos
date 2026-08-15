@@ -1,15 +1,16 @@
-//! M2 验收：cos-llm 的 `openai` feature（OpenAI 兼容适配器）——本地回环 HTTP 服务器
+//! M2 验收：cos-llm 的 `adapters` feature（OpenAI 兼容适配器）——本地回环 HTTP 服务器
 //! 打桩：流式文本增量 + usage 映射 + [DONE] 收束；服务端失败（5xx / error 块）在无
 //! 产出时自动非流式兜底；4xx 不重试原样报错。
 //!
-//! 门控：仅在 `openai` feature 开启时编译（`cargo test --workspace` 经 Provider 插件
-//! 自动启用；单独 `cargo test -p cos-llm` 需 `--features openai`）。
+//! 门控：仅在 `adapters` feature 开启时编译（`cargo test --workspace` 经 Provider 插件
+//! 自动启用；单独 `cargo test -p cos-llm` 经 self-dev-dep 自动启用）。
 
-#![cfg(feature = "openai")]
+#![cfg(feature = "adapters")]
 
 use cos_llm::{
-    AssistantMessage, ChunkDelta, ContentBlock, InputContent, LlmAdapter, LlmRequest, Message,
-    OpenAiAdapter, OpenAiConfig, TokenUsage, ToolCall, ToolResultMessage, UserMessage,
+    AssistantMessage, ChunkDelta, ContentBlock, FinishReason, InputContent, LlmAdapter,
+    LlmErrorCode, LlmRequest, Message, OpenAiAdapter, OpenAiConfig, TokenUsage, ToolCall,
+    ToolResultMessage, UserMessage,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -130,6 +131,7 @@ async fn reasoning_only_stream_emits_thinking_deltas() {
             ChunkDelta::Text { text: delta } => text.push_str(&delta),
             ChunkDelta::Thinking { text: delta } => thinking.push_str(&delta),
             ChunkDelta::ToolUse { .. } => {}
+            ChunkDelta::Finish { .. } => {}
         }
     }
     server.await.unwrap();
@@ -161,6 +163,7 @@ async fn thinking_and_content_stream_separately() {
             ChunkDelta::Text { text: delta } => text.push_str(&delta),
             ChunkDelta::Thinking { text: delta } => thinking.push_str(&delta),
             ChunkDelta::ToolUse { .. } => {}
+            ChunkDelta::Finish { .. } => {}
         }
     }
     server.await.unwrap();
@@ -388,6 +391,7 @@ async fn non_streaming_thinking_and_content_are_separate_chunks() {
             ChunkDelta::Text { text: delta } => text.push_str(&delta),
             ChunkDelta::Thinking { text: delta } => thinking.push_str(&delta),
             ChunkDelta::ToolUse { .. } => {}
+            ChunkDelta::Finish { .. } => {}
         }
         if chunk.usage.is_some() {
             usage = chunk.usage;
@@ -432,6 +436,7 @@ async fn non_streaming_tool_call_maps_to_tool_use() {
             ChunkDelta::Text { text: delta } => text.push_str(&delta),
             ChunkDelta::Thinking { .. } => {}
             ChunkDelta::ToolUse { call } => calls.push(call),
+            ChunkDelta::Finish { .. } => {}
         }
     }
     server.await.unwrap();
@@ -470,6 +475,7 @@ async fn streaming_tool_call_fragments_are_assembled() {
             ChunkDelta::Text { text: delta } => text.push_str(&delta),
             ChunkDelta::Thinking { .. } => {}
             ChunkDelta::ToolUse { call } => calls.push(call),
+            ChunkDelta::Finish { .. } => {}
         }
     }
     server.await.unwrap();
@@ -546,4 +552,94 @@ async fn assistant_tool_history_is_sent_back_in_body() {
         assert!(item.is_ok(), "{item:?}");
     }
     server.await.unwrap();
+}
+
+/// 终结分片：流尾显式发出 Finish{Stop}（非流式文本回复）。
+#[tokio::test]
+async fn finish_chunk_marks_stream_end_with_stop() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+             {\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"好\"}}],\
+             \"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4}}",
+        ],
+    ));
+
+    let adapter = single_adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut finish = None;
+    let mut chunks = 0usize;
+    while let Some(item) = stream.next().await {
+        chunks += 1;
+        if let ChunkDelta::Finish { reason } = item.unwrap().delta {
+            finish = Some(reason);
+        }
+    }
+    server.await.unwrap();
+    assert_eq!(finish, Some(FinishReason::Stop), "文本回复 → finish: stop");
+    assert!(chunks >= 2, "文本块 + finish 至少两块: {chunks}");
+}
+
+/// 终结分片：流式工具调用 → Finish{ToolCalls}；且 finish 是最后一块。
+#[tokio::test]
+async fn finish_chunk_marks_tool_calls_reason() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\
+             \"type\":\"function\",\"function\":{\"name\":\"inventory\",\"arguments\":\"{}\"}}]}}]}\n\n\
+             data: [DONE]\n\n",
+        ],
+    ));
+
+    let adapter = adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut last: Option<cos_llm::ChunkDelta> = None;
+    while let Some(item) = stream.next().await {
+        last = Some(item.unwrap().delta);
+    }
+    server.await.unwrap();
+    assert_eq!(
+        last,
+        Some(ChunkDelta::Finish {
+            reason: FinishReason::ToolCalls
+        }),
+        "工具调用回复 → 最后一块 finish: tool-calls"
+    );
+}
+
+/// 稳定错误码：4xx 鉴权 → Auth 码 + status 事实；5xx → Server 码。
+#[tokio::test]
+async fn errors_carry_stable_codes_and_status_facts() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec!["HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n{}"],
+    ));
+    let adapter = single_adapter(port);
+    let mut stream = adapter.stream(&request());
+    let error = stream.next().await.unwrap().unwrap_err();
+    server.await.unwrap();
+    assert_eq!(error.code, LlmErrorCode::Auth, "{error}");
+    assert_eq!(error.facts.unwrap().status, Some(401));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec!["HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n{}"],
+    ));
+    let adapter = single_adapter(port);
+    let mut stream = adapter.stream(&request());
+    let error = stream.next().await.unwrap().unwrap_err();
+    server.await.unwrap();
+    assert_eq!(error.code, LlmErrorCode::Server, "{error}");
+    assert!(error.is_retryable(), "5xx 应可重试（fallback 可切换）");
 }

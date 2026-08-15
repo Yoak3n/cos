@@ -35,19 +35,24 @@ impl FactoryRef {
         }
     }
 
-    /// 依赖的服务名（静态 = 宏声明；dlopen = 清单，P8 为空 → 无注入声明）。
-    fn inject(&self) -> &'static [&'static str] {
+    /// 依赖的服务名（静态 = 宏声明；dlopen = 清单 `inject`，P10 起参与依赖图；
+    /// 拥有型——dlopen 清单名来自运行期 JSON）。
+    fn inject(&self) -> Vec<String> {
         match self {
-            FactoryRef::Static(factory) => (factory.inject)(),
-            FactoryRef::Dlopen(_) => &[],
+            FactoryRef::Static(factory) => {
+                (factory.inject)().iter().map(|s| s.to_string()).collect()
+            }
+            FactoryRef::Dlopen(plugin) => plugin.manifest().inject.clone(),
         }
     }
 
-    /// 提供的服务名（dlopen = 清单，P8 为空）。
-    fn provide(&self) -> &'static [&'static str] {
+    /// 提供的服务名（静态 = 宏声明；dlopen = 清单 `provide`）。
+    fn provide(&self) -> Vec<String> {
         match self {
-            FactoryRef::Static(factory) => (factory.provide)(),
-            FactoryRef::Dlopen(_) => &[],
+            FactoryRef::Static(factory) => {
+                (factory.provide)().iter().map(|s| s.to_string()).collect()
+            }
+            FactoryRef::Dlopen(plugin) => plugin.manifest().provide.clone(),
         }
     }
 }
@@ -67,7 +72,9 @@ pub struct LoadedPlugin {
     /// 该实例 fork 出的上下文（持有其 fiber）。
     pub context: Context,
     /// dlopen 插件的库句柄（保持 Library 存活到实例 Drop——其注册的工具/效果
-    /// 持有指向库内代码/堆的指针；卸载顺序：先 fiber 逆序注销，再 Drop 本实例）。
+    /// 持有指向库内代码/堆的指针；卸载顺序：先 fiber 逆序注销，再 Drop 本实例；
+    /// 纯 RAII 路径由 `DlopenPlugin::Drop` 兜底（库卸载前 dispose 状态 fiber，
+    /// P12 审计修复——曾因库先于效果卸载导致访问违例））。
     pub(crate) dlopen: Option<Arc<DlopenPlugin>>,
 }
 
@@ -128,17 +135,22 @@ pub struct PlannedEntry {
     pub tier: PluginTier,
     /// 有效配置。
     pub config: serde_json::Value,
+    /// 条目来源（cordis.yml / patch 文件路径；P13）。
+    pub source: String,
     pub(crate) factory: FactoryRef,
 }
 
 impl PlannedEntry {
-    /// 计划的 JSON 视图（`--dump-config` 用）。
+    /// 计划的 JSON 视图（`--dump-config` 用；含依赖声明与来源，dlopen 清单可见）。
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "id": self.entry_id,
             "name": self.name,
             "tier": format!("{:?}", self.tier),
+            "inject": self.factory.inject(),
+            "provide": self.factory.provide(),
             "config": self.config,
+            "source": self.source,
         })
     }
 }
@@ -164,18 +176,18 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
     // 1. 解析工厂 + 重复 provide 检测。
     // resolved 只含未禁用条目（其下标即图节点下标）。
     let mut resolved: Vec<(&Entry, FactoryRef)> = Vec::new();
-    // 服务名 → 首个提供者节点下标。
-    let mut provider: HashMap<&'static str, usize> = HashMap::new();
+    // 服务名 → 首个提供者节点下标（拥有型键：dlopen 清单的提供名来自运行期 JSON）。
+    let mut provider: HashMap<String, usize> = HashMap::new();
 
-    for entry in &profile.0 {
+    for entry in &profile.entries {
         if entry.disabled {
             continue;
         }
         let factory = resolve_factory(entry)?;
         for service in factory.provide() {
-            if let Some(previous) = provider.get(service) {
+            if let Some(previous) = provider.get(&service) {
                 return Err(LoadError::DuplicateProvide {
-                    service: (*service).to_string(),
+                    service,
                     plugins: vec![
                         resolved[*previous].0.id().to_string(),
                         entry.id().to_string(),
@@ -191,23 +203,29 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
     let node_count = resolved.len();
     let mut deps: Vec<Vec<usize>> = Vec::with_capacity(node_count);
     for (entry_index, (entry, factory)) in resolved.iter().enumerate() {
-        let mut required: Vec<&str> =
+        let mut required: Vec<String> =
             Vec::with_capacity(factory.inject().len() + entry.inject.len());
-        required.extend(factory.inject().iter().copied());
-        required.extend(entry.inject.iter().map(String::as_str));
+        required.extend(factory.inject());
+        required.extend(entry.inject.iter().cloned());
 
         let mut node_deps = Vec::new();
-        for service in required {
-            let provider_index =
-                provider
-                    .get(service)
-                    .copied()
-                    .ok_or_else(|| LoadError::MissingDependency {
-                        plugin: entry.id().to_string(),
-                        service: service.to_string(),
-                    })?;
-            if provider_index != entry_index {
-                node_deps.push(provider_index);
+        for service in &required {
+            match provider.get(service) {
+                Some(&provider_index) if provider_index != entry_index => {
+                    node_deps.push(provider_index);
+                }
+                Some(_) => {} // 自己提供自己，不成边
+                None => {
+                    // dlopen 清单注入的**宿主服务**（tools/llm 等，宿主预装配）：
+                    // 依赖图无提供者 → 不成边（能力裁剪仍按清单生效）；静态插件
+                    // 缺依赖仍是硬错误（fail loud）
+                    if !matches!(factory, FactoryRef::Dlopen(_)) {
+                        return Err(LoadError::MissingDependency {
+                            plugin: entry.id().to_string(),
+                            service: service.clone(),
+                        });
+                    }
+                }
             }
         }
         deps.push(node_deps);
@@ -261,6 +279,7 @@ pub fn plan(profile: &Profile) -> Result<Vec<PlannedEntry>, LoadError> {
                 name: entry.name.clone(),
                 tier: factory.tier(),
                 config: entry.config.clone(),
+                source: entry.source.clone(),
                 factory: factory.clone(),
             }
         })

@@ -3,7 +3,7 @@
 //!
 //! 背景：DeepSeek 官方 API（[`DEEPSEEK_BASE_URL`]）是 OpenAI 兼容的 `chat/completions`
 //! 接口——本插件开启 `cos-llm` 的 `openai` feature 复用其 OpenAI 兼容适配器
-//! （[`cos_llm::build_openai`]：流式优先、未产出即失败自动非流式兜底、
+//! （[`cos_llm::build_with_style`]：api style 分发，流式优先、未产出即失败自动非流式兜底、
 //! `reasoning_content` 推理内容独立成 Thinking 块），按 plugin-opencode 的范本把
 //! `"deepseek"` 工厂注册进 [`LlmRegistry`]（`register_factory_with_catalog` 声明式路径）。
 //! 未声明本插件则 `kind: deepseek` 不可用（fail loud，提示声明本插件）。注意区分：
@@ -173,7 +173,7 @@ pub struct DeepseekPlugin;
 
 impl Plugin for DeepseekPlugin {
     fn id(&self) -> &'static str {
-        "plugin-deepseek"
+        "plugin-deepseek-provider"
     }
 
     type Config = DeepseekPluginConfig;
@@ -201,7 +201,12 @@ impl Plugin for DeepseekPlugin {
             expand_env(&mut entry.defaults).map_err(CoreError::Other)?;
         }
         registry
-            .register_factory_with_catalog(DEEPSEEK_KIND, cos_llm::build_openai, defaults, catalog)
+            .register_factory_with_catalog(
+                DEEPSEEK_KIND,
+                cos_llm::build_with_style,
+                defaults,
+                catalog,
+            )
             .map_err(|error| {
                 CoreError::Other(format!(
                     "deepseek 工厂注册失败（kind '{DEEPSEEK_KIND}' 已存在？）: {error}"

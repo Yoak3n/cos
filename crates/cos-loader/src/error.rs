@@ -115,6 +115,48 @@ pub enum LoadError {
         /// 插件写入的错误文本。
         message: String,
     },
+    /// dlopen 插件：配置预校验（`cos_plugin_validate`）返回错误码（P12）。
+    #[error("dlopen 插件 '{name}' 配置校验失败（code={code}）: {message}")]
+    DlopenValidate {
+        /// 工厂名。
+        name: String,
+        /// 插件返回的错误码。
+        code: i32,
+        /// 插件写入的错误文本。
+        message: String,
+    },
+    /// patch 文件读取失败（P13）。
+    #[error("patch 文件 {path} 读取失败: {source}")]
+    PatchFile {
+        /// patch 文件路径。
+        path: String,
+        /// 读取错误。
+        #[source]
+        source: std::io::Error,
+    },
+    /// patch 结构无效（P13；fail loud——dsh warn+skip 是热重载妥协，cos 静态装载直接报错）。
+    #[error("{0}")]
+    PatchInvalid(String),
+    /// patch 定位不到目标条目（P13）。
+    #[error("patch 条目 '{target}' 在 '{file}' 中找不到（现有条目: {available:?}）")]
+    PatchTargetMissing {
+        /// patch 声明的定位键。
+        target: String,
+        /// patch 文件来源。
+        file: String,
+        /// 当前条目 id 列表（便于排查拼写）。
+        available: Vec<String>,
+    },
+    /// patch 名称校验失败（P13）。
+    #[error("patch 条目 '{id}' 名称不匹配（patch 声明 {expected:?}，实际 {actual:?}）")]
+    PatchNameMismatch {
+        /// patch 定位键。
+        id: String,
+        /// patch 声明的名称。
+        expected: String,
+        /// 目标条目实际名称。
+        actual: String,
+    },
     /// 其他失败。
     #[error("{0}")]
     Other(String),

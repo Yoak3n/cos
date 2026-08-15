@@ -15,7 +15,7 @@
   config:
     api_key: "${OPENCODE_API_KEY}"   # 插件级：端点/模型目录/api_key 全部由本插件负责
     # 模型列表由插件代码维护（BUILTIN_MODELS + config.models 扩展），
-    # 查询：plugin-opencode::available_models() / LlmRegistry::available_models(kind)
+    # 查询：plugin_opencode_provider::available_models() / LlmRegistry::available_models(kind)
     # models:
     #   - model: my-model
     #     defaults: { base_url: "https://my-gateway/v1", api_style: "openai", streaming: false }
@@ -23,7 +23,7 @@
   config:
     providers:
       # 省略模型 + group: <组> → 只展开该套餐分组的模型（模型清单由插件代码维护，
-      # 分组查询：plugin-opencode::available_groups() / LlmRegistry::available_groups(kind)）
+      # 分组查询：plugin_opencode_provider::available_groups() / LlmRegistry::available_groups(kind)
       - { id: go, plugin: opencode-provider, group: go }
       - { id: zen, plugin: opencode-provider, group: zen }
       # 省略 model/models（无 group）→ 插件目录全量展开（go+zen 全部模型）；条目 id 即组链

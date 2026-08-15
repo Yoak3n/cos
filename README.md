@@ -127,7 +127,7 @@ cos = { git = "https://github.com/Yoak3n/cos", default-features = false }
 
 **依赖方向铁律**：`plugins/*` 与 `cos-agent-loop` 只依赖各接缝的 Definition crate
 （cos-core / cos-llm / cos-tools / cos-agent / cos-shell / cos-session），不得开启
-`cos-llm` 的 `openai` feature（Provider 实现，随 feature 引入 reqwest/tokio；只有 Provider
+`cos-llm` 的 `adapters` feature（内置适配器族，随 feature 引入 reqwest/tokio；只有 Provider
 封装插件开它），不得依赖 cos-agent-loop 本身；cos-core 不依赖任何上层 crate；
 cos-contract 零运行时依赖（仅 serde），是 B 形态插件的唯一契约。
 
@@ -150,7 +150,7 @@ docs/      # configuration / third-party-dev / decisions / b-abi / rpc / memory-
 | `cos-contract` | B 形态版本化契约：B-ABI 握手、HostApi 函数表（零运行时依赖） |
 | `cos-session` | 会话日志唯一事实源：`SessionEvent` 封闭枚举、derive_messages、JSONL 重放 |
 | `cos-tools` | 工具注册表 + 执行管线（pre/guards/execute/post 瀑布） |
-| `cos-llm` | LLM 接缝：`LlmAdapter`、Message/ContentBlock、`LlmRegistry` 后备链；`openai` feature = OpenAI 兼容适配器 |
+| `cos-llm` | LLM 接缝：`LlmAdapter`、Message/ContentBlock、`LlmRegistry` 后备链；`adapters` feature = 内置适配器族（openai/anthropic/responses 风格 + api style 分发） |
 | `cos-agent` | `Agent` trait、注册表、Inbox、`agent_factory!` 驱动注册 |
 | `cos-shell` | shell 接缝（plugin-bash 用） |
 | `cos-loader` | cordis.yml → 工厂解析 → 拓扑排序 → 挂载；`DlopenPluginSource`（B 形态） |

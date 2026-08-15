@@ -151,6 +151,12 @@ impl ToolRegistry {
         self.tools.lock().unwrap().get(name).cloned()
     }
 
+    /// 按名注销工具（不存在 → 无操作）。B 形态插件卸载/`free` 时注销其注册的工具
+    /// （fiber 注销效果调用；重载场景同名工具可再次注册）。
+    pub fn unregister(&self, name: &str) {
+        self.tools.lock().unwrap().remove(name);
+    }
+
     /// 全部工具（名字序）。
     pub fn list(&self) -> Vec<Arc<dyn Tool>> {
         self.tools.lock().unwrap().values().cloned().collect()

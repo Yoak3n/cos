@@ -34,11 +34,13 @@ struct Args {
     llm: Option<LlmConfig>,
     agent_llm: Option<String>,
     agent_driver: Option<String>,
+    patch_files: Vec<String>,
     mode: Mode,
 }
 
 const USAGE: &str = "用法: cos --config <cordis.yml> [--session <id>] [--no-save] [--repl | --rpc | --prompt <text>] \
 [--dump-config]\n  \
+[--patch <cordis.patch.yml> ...] \
 [--llm-base-url <url> --llm-model <model> --llm-api-key <key>] [--llm-no-stream] [--agent-llm <id>] [--agent-driver <id>]\n  \
 缺省（无 --prompt/--rpc）为交互式 REPL；--prompt 为一次性；--rpc 为 stdio RPC 服务（pi 协议）";
 
@@ -57,6 +59,7 @@ fn parse_args() -> Result<Args, String> {
         llm: None,
         agent_llm: env_or("COS_AGENT_LLM"),
         agent_driver: env_or("COS_AGENT_DRIVER"),
+        patch_files: Vec::new(),
         mode: Mode::Repl,
     };
     let mut llm_base_url = env_or("COS_LLM_BASE_URL");
@@ -89,6 +92,11 @@ fn parse_args() -> Result<Args, String> {
                 llm_api_key = Some(args.next().ok_or("--llm-api-key 需要 key")?);
             }
             "--llm-no-stream" => no_stream = true,
+            "--patch" => {
+                parsed
+                    .patch_files
+                    .push(args.next().ok_or("--patch 需要路径")?);
+            }
             "--agent-llm" => {
                 parsed.agent_llm = Some(args.next().ok_or("--agent-llm 需要 id")?);
             }
@@ -180,6 +188,7 @@ async fn main() {
         llm: args.llm,
         agent_llm: args.agent_llm,
         agent_driver: args.agent_driver,
+        patch_files: args.patch_files,
     };
 
     let result = match args.mode {

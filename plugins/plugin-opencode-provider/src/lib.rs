@@ -24,7 +24,7 @@
 //!
 //! 依赖纪律（PLAN.md §2 的例外）：普通插件不得依赖具体 Provider crate；本插件的职责
 //! 就是把 opencode Provider 接进运行时，因此开启 `cos-llm` 的 **`openai` feature**
-//! （OpenAI 兼容适配器，[`cos_llm::build_openai`]）是其本职。
+//! （OpenAI 兼容适配器族，[`cos_llm::build_with_style`]）是其本职。
 //!
 //! 装载顺序：本插件声明 **Provider 类型**（[`PluginTier::Provider`]，装配优先级最高）
 //! ——loader 注册前扫描全部插件按类型排序，本插件自动排到 Core/Other 之前
@@ -47,17 +47,19 @@ pub const OPENCODE_KIND: &str = "opencode";
 
 /// 内置模型目录条目（全 const 字符串；apply 时转 [`ModelDefaults`]）。
 ///
-/// 每个模型独立声明**所属分组**（套餐）与端点/api 风格（`api_style: "openai"` 为当前
-/// 适配器实现；其余风格留作适配器扩展点）。`config.models` 可追加/覆盖（同名后者生效）。
+/// 每个模型独立声明**所属分组**（套餐）、端点与 **api style**（`openai` =
+/// `/chat/completions`、`anthropic` = `/messages`、`responses` = `/responses`；
+/// 经 [`cos_llm::build_with_style`] 分发——opencode-go 内部三种端点并存，见
+/// [`BUILTIN_MODELS`]）。`config.models` 可追加/覆盖（同名后者生效）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinModel {
     /// 模型 id。
     pub model: &'static str,
     /// 所属分组（套餐）：`"go"` 或 `"zen"`——provider 条目 `group:` 按组选择/展开。
     pub group: &'static str,
-    /// 该模型的端点。
+    /// 该模型的端点（风格决定路径后缀，base_url 同一）。
     pub base_url: &'static str,
-    /// api 风格（当前适配器实现 "openai"）。
+    /// api style（openai / anthropic / responses）。
     pub api_style: &'static str,
     /// 建议 streaming（推理网关建议 false）。
     pub streaming: bool,
@@ -65,29 +67,54 @@ pub struct BuiltinModel {
     pub max_tokens: u32,
 }
 
+/// 目录条目构造（const）：同一套餐统一端点/流式/预算，只差模型与风格。
+const fn entry(
+    model: &'static str,
+    group: &'static str,
+    base_url: &'static str,
+    api_style: &'static str,
+) -> BuiltinModel {
+    BuiltinModel {
+        model,
+        group,
+        base_url,
+        api_style,
+        streaming: false,
+        max_tokens: 4096,
+    }
+}
+
 /// 内置模型目录（**go/zen 分组**：go 与 zen 的模型清单/端点不一致，按组维护）。
 ///
-/// 可用模型查询：`available_models()`（全量）/ `models_in_group(group)`（按组）；
-/// provider 条目省略模型时可按 `group:` 展开对应组的模型。
+/// go 套餐模型按官方 API 文档标注各自 **api style**：GLM/Kimi/DeepSeek/MiMo/Hy3 →
+/// `openai`（`/chat/completions`）、MiniMax/Qwen → `anthropic`（`/messages`）、
+/// Grok/GPT → `responses`（`/responses`）——同一 `https://opencode.ai/zen/go/v1`
+/// base_url，路径由风格决定。可用模型查询：`available_models()`（全量）/
+/// `models_in_group(group)`（按组）；provider 条目省略模型时可按 `group:` 展开。
 pub const BUILTIN_MODELS: &[BuiltinModel] = &[
     // ---- go 套餐（订阅制，opencode.ai/zen/go/v1）----
-    BuiltinModel {
-        model: "deepseek-v4-flash",
-        group: "go",
-        base_url: GO_BASE_URL,
-        api_style: "openai",
-        streaming: false,
-        max_tokens: 4096,
-    },
+    entry("grok-4.5", "go", GO_BASE_URL, "responses"),
+    entry("gpt-5.6-luna", "go", GO_BASE_URL, "responses"),
+    entry("glm-5.3", "go", GO_BASE_URL, "openai"),
+    entry("glm-5.2", "go", GO_BASE_URL, "openai"),
+    entry("glm-5.1", "go", GO_BASE_URL, "openai"),
+    entry("kimi-k3", "go", GO_BASE_URL, "openai"),
+    entry("kimi-k2.7-code", "go", GO_BASE_URL, "openai"),
+    entry("kimi-k2.6", "go", GO_BASE_URL, "openai"),
+    entry("deepseek-v4-pro", "go", GO_BASE_URL, "openai"),
+    entry("deepseek-v4-flash", "go", GO_BASE_URL, "openai"),
+    entry("mimo-v2.5", "go", GO_BASE_URL, "openai"),
+    entry("mimo-v2.5-pro", "go", GO_BASE_URL, "openai"),
+    entry("minimax-m3", "go", GO_BASE_URL, "anthropic"),
+    entry("minimax-m2.7", "go", GO_BASE_URL, "anthropic"),
+    entry("minimax-m2.5", "go", GO_BASE_URL, "anthropic"),
+    entry("qwen3.8-max", "go", GO_BASE_URL, "anthropic"),
+    entry("qwen3.7-max", "go", GO_BASE_URL, "anthropic"),
+    entry("qwen3.7-plus", "go", GO_BASE_URL, "anthropic"),
+    entry("qwen3.6-plus", "go", GO_BASE_URL, "anthropic"),
+    entry("hy3", "go", GO_BASE_URL, "openai"),
     // ---- zen 套餐（按量，opencode.ai/zen/v1）----
-    BuiltinModel {
-        model: "deepseek-v4-flash-free",
-        group: "zen",
-        base_url: ZEN_BASE_URL,
-        api_style: "openai",
-        streaming: false,
-        max_tokens: 4096,
-    },
+    entry("deepseek-v4-flash-free", "zen", ZEN_BASE_URL, "openai"),
 ];
 
 impl BuiltinModel {
@@ -165,6 +192,12 @@ pub struct OpencodePluginConfig {
     pub api_key: Option<String>,
     /// 模型目录追加/覆盖（同名模型后者生效；字段见 [`ModelDefaults`]）。
     pub models: Vec<ModelDefaults>,
+    /// **模型清单拉取端点**（opt-in）：apply 时 GET 该端点（如
+    /// `https://opencode.ai/zen/go/v1/models`）拉取 Provider 可用模型，并入目录
+    /// （位置：内置目录 < 拉取 < `config.models` 显式覆盖）。网络失败 → fail loud。
+    pub models_endpoint: Option<String>,
+    /// 拉取模型的默认 api style（缺省 `"openai"`；可后续经 `config.models` 逐模型覆盖）。
+    pub models_api_style: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for OpencodePluginConfig {
@@ -182,6 +215,10 @@ impl<'de> serde::Deserialize<'de> for OpencodePluginConfig {
             api_key: Option<String>,
             #[serde(default)]
             models: Vec<ModelDefaults>,
+            #[serde(default)]
+            models_endpoint: Option<String>,
+            #[serde(default)]
+            models_api_style: Option<String>,
         }
         let inner = Option::<Inner>::deserialize(deserializer)?.unwrap_or_default();
         Ok(Self {
@@ -189,6 +226,8 @@ impl<'de> serde::Deserialize<'de> for OpencodePluginConfig {
             base_url: inner.base_url,
             api_key: inner.api_key,
             models: inner.models,
+            models_endpoint: inner.models_endpoint,
+            models_api_style: inner.models_api_style,
         })
     }
 }
@@ -222,7 +261,7 @@ pub struct OpencodePlugin;
 
 impl Plugin for OpencodePlugin {
     fn id(&self) -> &'static str {
-        "plugin-opencode"
+        "plugin-opencode-provider"
     }
 
     type Config = OpencodePluginConfig;
@@ -245,12 +284,27 @@ impl Plugin for OpencodePlugin {
         }
         // defaults 与模型目录都支持 ${ENV_VAR} 展开（api_key 等可放环境变量，密钥不进文件）
         expand_env(&mut defaults).map_err(CoreError::Other)?;
-        let mut catalog = catalog_with(BUILTIN_MODELS, config.models.clone());
+        // 目录次序：内置 < models_endpoint 拉取 < config.models 显式覆盖
+        let mut catalog = catalog_with(BUILTIN_MODELS, Vec::new());
+        if let Some(endpoint) = &config.models_endpoint {
+            let fetched = cos_llm::fetch_models(
+                endpoint,
+                config.models_api_style.as_deref().unwrap_or("openai"),
+            )
+            .map_err(CoreError::Other)?;
+            catalog.extend(fetched);
+        }
+        catalog.extend(config.models.clone());
         for entry in &mut catalog {
             expand_env(&mut entry.defaults).map_err(CoreError::Other)?;
         }
         registry
-            .register_factory_with_catalog(OPENCODE_KIND, cos_llm::build_openai, defaults, catalog)
+            .register_factory_with_catalog(
+                OPENCODE_KIND,
+                cos_llm::build_with_style,
+                defaults,
+                catalog,
+            )
             .map_err(|error| {
                 CoreError::Other(format!(
                     "opencode 工厂注册失败（kind '{OPENCODE_KIND}' 已存在？）: {error}"

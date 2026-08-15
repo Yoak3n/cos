@@ -28,6 +28,8 @@ pub struct RunConfig {
     pub agent_llm: Option<String>,
     /// 主 agent 驱动 id（`agent_factory!` 注册表；None = "loop"；未知 id → 启动失败）。
     pub agent_driver: Option<String>,
+    /// `--patch` 附加层（P13：按顺序应用，后覆盖先；相对 cwd 解析）。
+    pub patch_files: Vec<String>,
 }
 
 /// 真实 LLM 配置（opencode-go 等 OpenAI 兼容端点）。

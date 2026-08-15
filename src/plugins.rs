@@ -77,27 +77,32 @@ pub fn builtin_agent_drivers() -> [&'static str; 1] {
     [cos_agent_loop::LOOP_DRIVER_ID]
 }
 
-/// 装载插件树：锚定内置插件与驱动 → 解析 cordis.yml → 拓扑排序 → 按序 apply。
+/// 装载插件树：锚定内置插件与驱动 → 解析 cordis.yml（+ patch 层叠）→
+/// 拓扑排序 → 按序 apply。
 ///
 /// `config_path: None` = 零插件装配（库嵌入模式）：跳过 yml 解析，装载空插件树；
 /// 锚点照常执行（保证插件/驱动的 inventory 注册表被链接，后续程序化挂载可用）。
+///
+/// `cli_patches`（P13）：`--patch` 附加层（按顺序应用，后覆盖先；相对 cwd 解析）。
 pub fn load(
     root: &Context,
     config_path: Option<&str>,
+    cli_patches: &[String],
 ) -> Result<loader::LoadedApp, loader::LoadError> {
     // 锚点：保证插件/驱动 crate 的 inventory 注册表被链接
     let _ = builtin_plugin_ids();
     let _ = builtin_agent_drivers();
     let profile = match config_path {
-        Some(path) => Profile::load(path)?,
+        Some(path) => Profile::load_merged(path, cli_patches)?,
         None => Profile::default(),
     };
     loader::load(root, &profile)
 }
 
-/// `--dump-config` 的计划 JSON（与装载共用同一路径，保证输出与装载一致）。
-pub fn plan_json(config_path: &str) -> Result<String, loader::LoadError> {
+/// `--dump-config` 的计划 JSON（与装载共用同一路径，保证输出与装载一致；
+/// P13：输出合并后的完整条目列表，含 `source` 来源标注）。
+pub fn plan_json(config_path: &str, cli_patches: &[String]) -> Result<String, loader::LoadError> {
     let _ = builtin_plugin_ids();
-    let profile = Profile::load(config_path)?;
+    let profile = Profile::load_merged(config_path, cli_patches)?;
     loader::dump_plan(&profile)
 }

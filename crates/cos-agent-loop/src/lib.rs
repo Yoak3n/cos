@@ -21,7 +21,8 @@ use cos_agent::{
 };
 use cos_core::{Context, ScopeKey, ScopeTarget};
 use cos_llm::{
-    AssistantMessage, ChunkDelta, ContentBlock, LlmAdapter, LlmRequest, ToolCall, UserMessage,
+    AssistantMessage, ChunkDelta, ContentBlock, FinishReason, LlmAdapter, LlmRequest, ToolCall,
+    UserMessage,
 };
 use cos_session::{AbortCause, RequestHeader, Session, SessionEventData, TurnEndReason};
 use futures::StreamExt;
@@ -236,7 +237,16 @@ impl AgentCore {
         };
         // 先写日志再行动
         self.session.append(SessionEventData::TurnStart { turn });
-        Self::check_abort(&handle)?;
+        if let Err(error) = Self::check_abort(&handle) {
+            // 调度前取消：同样闭合 turn（start↔end 配对不变量，先写日志再返回）
+            self.session.append(SessionEventData::TurnEnd {
+                turn,
+                reason: TurnEndReason::Aborted {
+                    cause: handle.cause().unwrap_or(AbortCause::User),
+                },
+            });
+            return Err(error);
+        }
 
         let mut turn_ends: Option<TurnEndReason> = None;
         let mut target = InboxTarget::NextTurn;
@@ -425,11 +435,17 @@ impl AgentCore {
 
         let mut blocks: Vec<ContentBlock> = Vec::new();
         let mut usage = None;
+        let mut finish_reason: Option<FinishReason> = None;
         let mut stream = self.adapter.stream(&request);
         while let Some(item) = stream.next().await {
             Self::check_abort(handle)?;
             match item {
                 Ok(chunk) => {
+                    // 终结分片 = 控制信息（非内容）：记录结束原因，不入会话日志
+                    if let ChunkDelta::Finish { reason } = chunk.delta {
+                        finish_reason = Some(reason);
+                        continue;
+                    }
                     // 先写日志：chunk 逐条入账
                     self.session.append(SessionEventData::AssistantChunk {
                         turn,
@@ -461,6 +477,7 @@ impl AgentCore {
                             }
                         }
                         ChunkDelta::ToolUse { call } => blocks.push(ContentBlock::ToolUse { call }),
+                        ChunkDelta::Finish { .. } => unreachable!("已在上方拦截"),
                     }
                 }
                 Err(error) => return Err(LoopError::Llm(error)),
@@ -483,7 +500,12 @@ impl AgentCore {
             usage,
         });
 
+        if tool_calls.is_empty() && finish_reason != Some(FinishReason::ToolCalls) {
+            return Ok(Some(TurnEndReason::Completed));
+        }
         if tool_calls.is_empty() {
+            // 模型显式请求工具（finish: tool-calls）但未产出任何工具块（适配器异常）：
+            // 按完成处理，避免死循环（不执行空工具轮）
             return Ok(Some(TurnEndReason::Completed));
         }
 

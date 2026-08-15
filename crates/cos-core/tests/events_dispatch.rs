@@ -320,3 +320,99 @@ async fn waterfall_no_listeners_runs_default() {
         .unwrap();
     assert_eq!(result, "x-default");
 }
+
+// —— waterfall 链组合：跨分发种类独立、veto 保留最新变换 ——
+
+#[tokio::test]
+async fn waterfall_mixed_dispatch_kinds_on_same_event_are_independent() {
+    // 同一事件名下注册 emit 与 waterfall 监听器：emit() 只跑 emit，waterfall() 只跑 waterfall。
+    let ctx = Context::root();
+    let emit_hits = Arc::new(AtomicUsize::new(0));
+    let e = emit_hits.clone();
+    ctx.on("mix", move |_| {
+        e.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+    let wf_hits = Arc::new(AtomicUsize::new(0));
+    let w = wf_hits.clone();
+    ctx.on_waterfall::<u32, u32>("mix", move |d| {
+        w.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { d.next().await })
+    })
+    .unwrap();
+
+    ctx.emit("mix", Arc::new(()) as EventPayload);
+    assert_eq!(emit_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        wf_hits.load(Ordering::SeqCst),
+        0,
+        "emit 不触发 waterfall 监听器"
+    );
+
+    let result = ctx
+        .waterfall("mix", 5u32, |d| Box::pin(async move { d.value() + 1 }))
+        .await
+        .unwrap();
+    assert_eq!(result, 6);
+    assert_eq!(wf_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        emit_hits.load(Ordering::SeqCst),
+        1,
+        "waterfall 不触发 emit 监听器"
+    );
+}
+
+#[tokio::test]
+async fn waterfall_veto_preserves_latest_transform() {
+    // 链中 veto 的值 = 该节点处的**最新变换后载荷**（前序监听器的变换可见）。
+    let ctx = Context::root();
+    ctx.on_waterfall::<u32, u32>("w", |d| {
+        d.set_value(d.value() + 5);
+        Box::pin(async move { d.next().await })
+    })
+    .unwrap();
+    ctx.on_waterfall::<u32, u32>("w", |d| {
+        d.set_value(d.value() * 3);
+        Box::pin(async move { *d.value() }) // veto：返回当前值
+    })
+    .unwrap();
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let o = order.clone();
+    ctx.on_waterfall::<u32, u32>("w", move |_d| {
+        o.lock().unwrap().push(1);
+        Box::pin(async { 0 })
+    })
+    .unwrap();
+
+    let result = ctx
+        .waterfall("w", 1u32, |d| Box::pin(async move { d.value() + 100 }))
+        .await
+        .unwrap();
+    assert_eq!(result, 18, "(1+5)*3 在 veto 点返回");
+    assert!(
+        order.lock().unwrap().is_empty(),
+        "veto 后的监听器与默认行为不得执行"
+    );
+}
+
+#[tokio::test]
+async fn waterfall_default_sees_final_transformed_value() {
+    // 链尾默认行为读取的是**全链变换后**的载荷（agent/request 等模式的语义）。
+    let ctx = Context::root();
+    ctx.on_waterfall::<u32, u32>("w", |d| {
+        d.set_value(d.value() + 10);
+        Box::pin(async move { d.next().await })
+    })
+    .unwrap();
+    ctx.on_waterfall::<u32, u32>("w", |d| {
+        d.set_value(d.value() * 100);
+        Box::pin(async move { d.next().await })
+    })
+    .unwrap();
+
+    let result = ctx
+        .waterfall("w", 1u32, |d| Box::pin(async move { *d.value() }))
+        .await
+        .unwrap();
+    assert_eq!(result, 1100, "默认行为读取全链变换后的载荷 (1+10)*100");
+}

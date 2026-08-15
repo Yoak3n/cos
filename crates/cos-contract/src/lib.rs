@@ -15,9 +15,13 @@ pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// B-ABI 版本（HostApi 函数表语义版本；与 crate 版本解耦）。
 /// 兼容规则：major 相同且插件 minor ≤ 宿主 minor 即兼容（见 [`ContractVersion::compatible_with`]）。
+///
+/// 0.4.0（当前）：插件清单符号 [`PLUGIN_ENTRY_MANIFEST`]——清单声明 `inject`/`provide`，
+/// 参与 loader 依赖图（拓扑排序）并触发 **HostApi 能力裁剪**（`get_service` 只对
+/// 注入的服务生效；无清单符号 = 旧行为，不裁剪）。
 pub const API_VERSION: ContractVersion = ContractVersion {
     major: 0,
-    minor: 3,
+    minor: 4,
     patch: 0,
 };
 
@@ -156,13 +160,22 @@ pub type ToolExecute = unsafe extern "C" fn(
 
 /// 导出符号：返回 `API_VERSION.encode()`（宿主先调它做版本握手）。
 pub const PLUGIN_ENTRY_ABI_VERSION: &str = "cos_plugin_abi_version";
-/// 导出符号：`apply(host, config_json, error_buf, error_len) -> ErrorCode`。
+/// 导出符号（可选，0.4.0）：返回插件清单 JSON 的 C 字符串（静态、进程内有效）。
+/// 清单声明 `inject`/`provide`——宿主据此建依赖图并**裁剪 HostApi 能力**；
+/// 缺失 = 旧行为（不裁剪、不参与依赖图）。
+pub const PLUGIN_ENTRY_MANIFEST: &str = "cos_plugin_manifest";
+/// 导出符号：`apply(host, ctx, config_json, error_buf, error_len) -> ErrorCode`。
 pub const PLUGIN_ENTRY_APPLY: &str = "cos_plugin_apply";
-/// 导出符号（可选，P9）：`validate(config_json, error_buf, error_len) -> ErrorCode`。
+/// 导出符号（可选，P12 起宿主在 apply 前调用）：`validate(config_json, error_buf, error_len) -> ErrorCode`。
+/// 缺失 = 跳过配置预校验（apply 仍会执行）；返回非零 → 装载失败（fail loud，错误文本入 error_buf）。
 pub const PLUGIN_ENTRY_VALIDATE: &str = "cos_plugin_validate";
 
 /// `cos_plugin_abi_version` 的函数签名。
 pub type PluginAbiVersion = unsafe extern "C" fn() -> u32;
+
+/// `cos_plugin_manifest` 的函数签名：返回静态 NUL 结尾 JSON（如
+/// `{"id":"todo","inject":["tools"],"provide":["dlopen-todo"]}`）；空指针 = 无清单。
+pub type PluginManifestFn = unsafe extern "C" fn() -> *const std::ffi::c_char;
 
 /// `cos_plugin_apply` 的函数签名。
 /// `ctx`（HostCtx）在 apply 期间有效；插件后续调用 HostApi 函数时原样回传。
@@ -174,7 +187,8 @@ pub type PluginApply = unsafe extern "C" fn(
     error_len: usize,
 ) -> i32;
 
-/// `cos_plugin_validate`（可选）的函数签名。
+/// `cos_plugin_validate`（可选）的函数签名：配置预校验（apply 之前调用；
+/// 非零返回 → 装载失败，错误文本写 error_buf）。
 pub type PluginValidate = unsafe extern "C" fn(
     config_json: *const std::ffi::c_char,
     error_buf: ErrorBuf,
@@ -218,6 +232,7 @@ impl ErrorCode {
             4 => ErrorCode::ApplyFailed,
             5 => ErrorCode::EffectRegistrationFailed,
             6 => ErrorCode::InvalidHandle,
+            7 => ErrorCode::CallFailed,
             _ => return None,
         })
     }
@@ -320,6 +335,7 @@ mod tests {
             ErrorCode::ApplyFailed,
             ErrorCode::EffectRegistrationFailed,
             ErrorCode::InvalidHandle,
+            ErrorCode::CallFailed,
         ] {
             assert_eq!(ErrorCode::from_i32(code as i32), Some(code));
         }

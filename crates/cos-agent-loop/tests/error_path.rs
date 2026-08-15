@@ -7,7 +7,7 @@ use std::sync::Arc;
 use cos_agent::{AgentOptions, AgentRegistry, CreateAgentOptions};
 use cos_agent_loop::LoopFactory;
 use cos_core::Context;
-use cos_llm::{LlmAdapter, LlmError, LlmRequest, LlmStream, UserMessage};
+use cos_llm::{LlmAdapter, LlmError, LlmErrorCode, LlmRequest, LlmStream, UserMessage};
 use cos_session::{SessionEventData, TurnEndReason};
 use cos_tools::ToolRegistry;
 
@@ -21,7 +21,7 @@ impl LlmAdapter for FailingAdapter {
 
     fn stream(&self, _request: &LlmRequest) -> LlmStream {
         Box::pin(futures::stream::once(async move {
-            Err(LlmError::Failure("模拟失败".to_string()))
+            Err(LlmError::new(LlmErrorCode::Server, "模拟失败"))
         }))
     }
 }

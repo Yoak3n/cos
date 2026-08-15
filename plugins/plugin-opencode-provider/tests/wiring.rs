@@ -1,5 +1,6 @@
 //! plugin-opencode 验收：套餐端点解析（plan: go|zen）、非法套餐校验、内置模型目录
-//! （go/zen 分离）+ config.models 覆盖、插件级 api_key（真实请求验证）、apply 注册带目录工厂。
+//! （go/zen 分离，**多 api style**：openai/anthropic/responses）+ config.models 覆盖、
+//! models_endpoint 拉取、插件级 api_key（真实请求验证）、apply 注册带目录工厂。
 
 use cos_core::{Context, Plugin, Validate};
 use cos_llm::{LlmRegistry, LlmRequest, ModelDefaults};
@@ -10,6 +11,17 @@ use plugin_opencode_provider::{
     catalog_with, resolve_base_url,
 };
 use serde_json::json;
+
+fn config(plan: Option<&str>) -> OpencodePluginConfig {
+    OpencodePluginConfig {
+        plan: plan.map(str::to_string),
+        base_url: None,
+        api_key: None,
+        models: vec![],
+        models_endpoint: None,
+        models_api_style: None,
+    }
+}
 
 #[test]
 fn plan_resolves_to_plan_endpoints() {
@@ -47,6 +59,36 @@ fn builtin_catalog_covers_go_and_zen_models_with_own_endpoints() {
     assert_eq!(defaults.defaults["streaming"], false);
 }
 
+/// go 套餐模型按官方 API 文档标注 api style（同一 base_url，路径由风格决定）。
+#[test]
+fn builtin_go_catalog_marks_per_model_api_styles() {
+    let style_of = |model: &str| {
+        BUILTIN_MODELS
+            .iter()
+            .find(|entry| entry.model == model)
+            .expect("内置模型")
+            .api_style
+    };
+    // chat/completions（openai）
+    assert_eq!(style_of("glm-5.3"), "openai");
+    assert_eq!(style_of("kimi-k3"), "openai");
+    assert_eq!(style_of("deepseek-v4-flash"), "openai");
+    assert_eq!(style_of("hy3"), "openai");
+    // /messages（anthropic）
+    assert_eq!(style_of("minimax-m3"), "anthropic");
+    assert_eq!(style_of("qwen3.8-max"), "anthropic");
+    // /responses（responses）
+    assert_eq!(style_of("grok-4.5"), "responses");
+    assert_eq!(style_of("gpt-5.6-luna"), "responses");
+    // 三种风格在同一 base_url 下并存
+    assert!(
+        BUILTIN_MODELS
+            .iter()
+            .filter(|entry| entry.group == "go")
+            .all(|entry| entry.base_url == GO_BASE_URL)
+    );
+}
+
 #[test]
 fn config_models_override_builtin_catalog() {
     let extra = vec![ModelDefaults {
@@ -67,26 +109,11 @@ fn config_models_override_builtin_catalog() {
 
 #[test]
 fn validate_rejects_unknown_plan() {
-    let bad = OpencodePluginConfig {
-        plan: Some("nope".into()),
-        base_url: None,
-        api_key: None,
-        models: vec![],
-    };
+    let bad = config(Some("nope"));
     assert!(bad.validate().is_err());
-    let ok = OpencodePluginConfig {
-        plan: Some("zen".into()),
-        base_url: None,
-        api_key: None,
-        models: vec![],
-    };
+    let ok = config(Some("zen"));
     assert!(ok.validate().is_ok());
-    let default = OpencodePluginConfig {
-        plan: None,
-        base_url: None,
-        api_key: None,
-        models: vec![],
-    };
+    let default = config(None);
     assert!(default.validate().is_ok());
 }
 
@@ -94,12 +121,8 @@ fn validate_rejects_unknown_plan() {
 fn apply_registers_kind_with_catalog() {
     let ctx = Context::root();
     ctx.provide(LlmRegistry::new(&ctx)).unwrap();
-    let config = OpencodePluginConfig {
-        plan: Some("go".into()),
-        base_url: None,
-        api_key: None,
-        models: vec![],
-    };
+    let mut config = config(Some("go"));
+    config.api_key = None;
     OpencodePlugin.apply(&ctx, &config).unwrap();
     let registry = ctx.get::<LlmRegistry>().unwrap();
     assert!(registry.factory_kinds().contains(&OPENCODE_KIND));
@@ -132,12 +155,9 @@ async fn plugin_api_key_is_used_when_entry_omits_it() {
     .await;
     let ctx = Context::root();
     ctx.provide(LlmRegistry::new(&ctx)).unwrap();
-    let config = OpencodePluginConfig {
-        plan: None,
-        base_url: Some(format!("http://127.0.0.1:{}/v1", server.port)),
-        api_key: Some("${COS_TEST_OP_KEY}".into()),
-        models: vec![],
-    };
+    let mut config = config(None);
+    config.base_url = Some(format!("http://127.0.0.1:{}/v1", server.port));
+    config.api_key = Some("${COS_TEST_OP_KEY}".into());
     OpencodePlugin.apply(&ctx, &config).unwrap();
     let registry = ctx.get::<LlmRegistry>().unwrap();
     // 未命中目录 → 插件级默认（base_url 覆盖 + api_key 展开）；条目零密钥
@@ -149,4 +169,49 @@ async fn plugin_api_key_is_used_when_entry_omits_it() {
         let _ = item.unwrap();
     }
     server.join().await; // 服务器断言 Authorization 通过即证明
+}
+
+/// models_endpoint 拉取：本地回环服务器返回模型清单 → 目录并入（默认 api style）。
+#[test]
+fn models_endpoint_fetches_and_merges_catalog() {
+    // 专用 /models 服务器（返回字符串数组）
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = std::io::Read::read(&mut socket, &mut buf);
+            let body = r#"["m-fetched-a","m-fetched-b"]"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}"
+            );
+            let _ = std::io::Write::write_all(&mut socket, response.as_bytes());
+        }
+    });
+    let ctx = Context::root();
+    ctx.provide(LlmRegistry::new(&ctx)).unwrap();
+    let mut config = config(None);
+    config.models_endpoint = Some(format!("http://{addr}/v1/models"));
+    config.models_api_style = Some("anthropic".into());
+    OpencodePlugin.apply(&ctx, &config).unwrap();
+    let registry = ctx.get::<LlmRegistry>().unwrap();
+    let available = registry.available_models(OPENCODE_KIND);
+    assert!(
+        available.contains(&"m-fetched-a".to_string()),
+        "{available:?}"
+    );
+    assert!(
+        available.contains(&"m-fetched-b".to_string()),
+        "{available:?}"
+    );
+    // 拉取模型默认 api_style = anthropic（目录命中时按此构建，构造不联网）
+    assert!(
+        registry
+            .build(
+                OPENCODE_KIND,
+                &json!({ "model": "m-fetched-a", "api_key": "k" })
+            )
+            .is_ok()
+    );
 }

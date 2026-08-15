@@ -263,3 +263,157 @@ fn scoped_dispatch_reaches_untagged_and_own_tag_only() {
     assert_eq!(hits.1.load(Ordering::SeqCst), 1);
     assert_eq!(hits.2.load(Ordering::SeqCst), 0);
 }
+
+/// 三态之 Key 分发：**多个祖先同时监听** → 全部收到（事件沿祖先链逐级上流）。
+#[test]
+fn key_dispatch_reaches_multiple_ancestors() {
+    let ctx = Context::root();
+    ctx.bind_scope_parent(key("child"), key("parent")).unwrap();
+    ctx.bind_scope_parent(key("parent"), key("root")).unwrap();
+    let parent = ctx.fork_scoped(key("parent"));
+    let root_scope = ctx.fork_scoped(key("root"));
+
+    let hits = (hit_counter(), hit_counter());
+    let (h0, _) = hits.clone();
+    parent
+        .on("ev", move |_| {
+            h0.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+    let (_, h1) = hits.clone();
+    root_scope
+        .on("ev", move |_| {
+            h1.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+
+    let target = ctx.target(ScopeTarget::Key(key("child")));
+    target.emit("ev", Arc::new(()) as EventPayload);
+    assert_eq!(hits.0.load(Ordering::SeqCst), 1, "父应收到");
+    assert_eq!(hits.1.load(Ordering::SeqCst), 1, "祖父应收到");
+}
+
+/// 三态之 Key 分发：监听器随 fiber 卸载后不再接收（RAII 反注册生效）。
+#[test]
+fn scoped_listener_stops_receiving_after_fiber_dispose() {
+    let ctx = Context::root();
+    let scoped = ctx.fork_scoped(key("a"));
+    let hits = hit_counter();
+    let h = hits.clone();
+    scoped
+        .on("ev", move |_| {
+            h.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+    // 先确认能收到，再卸载
+    let target = ctx.target(ScopeTarget::Key(key("a")));
+    target.emit("ev", Arc::new(()) as EventPayload);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    scoped.fiber().dispose();
+    target.emit("ev", Arc::new(()) as EventPayload);
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "卸载后监听器不得再接收");
+}
+
+/// 三态之 Key 分发与 waterfall 组合：作用域链上只串无 tag + 祖先链监听器，
+/// 无关 tag 被排除；veto 短路同样生效。
+#[tokio::test]
+async fn waterfall_scoped_dispatch_chains_untagged_and_ancestors_only() {
+    let ctx = Context::root();
+    ctx.bind_scope_parent(key("child"), key("parent")).unwrap();
+    let parent = ctx.fork_scoped(key("parent"));
+    let unrelated = ctx.fork_scoped(key("unrelated"));
+
+    // 无 tag 监听器：+1 后委托
+    ctx.on_waterfall::<u32, u32>("w", |d| {
+        d.set_value(d.value() + 1);
+        Box::pin(async move { d.next().await })
+    })
+    .unwrap();
+    // 祖先（parent）监听器：×2 后委托
+    parent
+        .on_waterfall::<u32, u32>("w", |d| {
+            d.set_value(d.value() * 2);
+            Box::pin(async move { d.next().await })
+        })
+        .unwrap();
+    // 无关 tag 监听器：不应被调用（加了会炸的标记）
+    let unrelated_hits = hit_counter();
+    let u = unrelated_hits.clone();
+    unrelated
+        .on_waterfall::<u32, u32>("w", move |d| {
+            u.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { d.next().await })
+        })
+        .unwrap();
+
+    // 在 child scope 上分发 → 无 tag + parent 链式变换；unrelated 排除
+    let result = ctx
+        .target(ScopeTarget::Key(key("child")))
+        .waterfall("w", 3u32, |d| Box::pin(async move { d.value() + 100 }))
+        .await
+        .unwrap();
+    assert_eq!(result, 108, "(3+1)*2 + 100");
+    assert_eq!(
+        unrelated_hits.load(Ordering::SeqCst),
+        0,
+        "无关 tag 不得入链"
+    );
+
+    // 链中 veto：无 tag 监听器**先注册**（链前）直接短路 → parent 与默认行为都不执行
+    let ctx2 = Context::root();
+    ctx2.bind_scope_parent(key("child2"), key("parent2"))
+        .unwrap();
+    let parent2 = ctx2.fork_scoped(key("parent2"));
+    let ctx2_untagged = hit_counter();
+    let t = ctx2_untagged.clone();
+    ctx2.on_waterfall::<u32, u32>("w", move |_d| {
+        t.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { 7 }) // veto：不调 next()
+    })
+    .unwrap();
+    let parent_hits = hit_counter();
+    let p = parent_hits.clone();
+    parent2
+        .on_waterfall::<u32, u32>("w", move |d| {
+            p.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { d.next().await })
+        })
+        .unwrap();
+    let result = ctx2
+        .target(ScopeTarget::Key(key("child2")))
+        .waterfall("w", 1u32, |d| Box::pin(async move { d.value() + 1 }))
+        .await
+        .unwrap();
+    assert_eq!(result, 7);
+    assert_eq!(
+        parent_hits.load(Ordering::SeqCst),
+        0,
+        "veto 短路剩余作用域链"
+    );
+}
+
+/// 三态之 Key 分发：路由按 Target 决定，与发射方 ctx 的 tag 无关。
+#[test]
+fn key_dispatch_is_by_target_not_emitter_ctx() {
+    let ctx = Context::root();
+    let a = ctx.fork_scoped(key("a"));
+    let b = ctx.fork_scoped(key("b"));
+    let hits = (hit_counter(), hit_counter());
+    let (h0, _) = hits.clone();
+    a.on("ev", move |_| {
+        h0.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+    let (_, h1) = hits.clone();
+    b.on("ev", move |_| {
+        h1.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+
+    // 从 a 的 ctx 发射，但 Target 指向 b → 只有 b 收到
+    let target = a.target(ScopeTarget::Key(key("b")));
+    target.emit("ev", Arc::new(()) as EventPayload);
+    assert_eq!(hits.0.load(Ordering::SeqCst), 0, "发射方 tag 不影响路由");
+    assert_eq!(hits.1.load(Ordering::SeqCst), 1);
+}
