@@ -1,0 +1,6 @@
+# @cos/bundle-mock — run the local mock provider instead of DeepSeek.
+- id: llm-deepseek
+  disabled: true
+- insert:
+    - id: mock-llm
+      name: '@cos/mock-llm'

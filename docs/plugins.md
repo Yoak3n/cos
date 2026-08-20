@@ -79,6 +79,12 @@ Methods: `ping` / `system.listProviders` / `agent.create` / `agent.followup` /
 `agent.whenIdle` / `agent.status` / `session.events`. Logs go to stderr; stdout
 carries protocol lines only.
 
+The sidecar can be compiled into a single-file Node SEA (no node_modules):
+`pnpm build:sea` bundles `@cos/sidecar/sea` — which supplies
+`packages/sidecar/src/plugins.ts` as the loader's in-process plugin registry and
+disables source watching — and injects it into `dist/cos-sidecar.exe`. See
+`scripts/build-sea.mjs` for the pipeline (esbuild → sea blob → postject).
+
 ## DSH ecosystem compatibility
 
 DSH plugins are written against the `@deepseek-ai/cordis` ABI. This harness runs the
@@ -123,28 +129,30 @@ changes to the harness.
 
 | Layer | File | Effect proven in `pnpm dev` |
 |---|---|---|
-| base | `cordis.yml` | persona + the 10 core rows (mock provider) | 
+| base | `cordis.yml` | persona + the 10 core rows (DeepSeek real provider) | 
 | overlay | `overlays/quiet.yml` | disables system-prompt debug printing |
-| bundle | `@cos/bundle-base`, `@cos/bundle-real` | base import + real-deepseek insert (`COS_BUNDLES`) |
+| bundle | `@cos/bundle-mock` | mock-provider insert for offline runs (`--bundles @cos/bundle-mock`) |
 | user patch | `cordis.patch.yml` | inserts `hello-external` (third-party, outside the workspace) |
 | home patch | `$X_COS_HOME/.cos/cordis.patch.yml` | outer-program customization, last word |
 | sidecar | `pnpm demo:sidecar` | JSON-RPC round trip with the same composed tree |
 
 ## Bundles (profile composition)
 
-A **bundle** is a local directory shipped as a package that declares itself in
-`bundle.yml` and carries a `cordis.patch.yml`. Boot composes them in this order:
+A **bundle** is a directory under the top-level `bundles/` that declares itself
+in `bundle.yml` and carries a `cordis.patch.yml`; it is not a workspace plugin
+package. Boot composes the layers in this applied order (later layers override
+earlier ones on conflicting rows):
 
 ```
-base cordis.yml → the bundle aggregate → overlay files → user cordis.patch.yml → home cordis.patch.yml
+base cordis.yml → overlay files → bundles → user cordis.patch.yml → home cordis.patch.yml
 ```
 
 A bundle's `bundle.yml` declares:
 
 ```yaml
 bundle:
-  id: cos:real
-  name: '@cos/bundle-real'
+  id: cos:mock
+  name: '@cos/bundle-mock'
   requires: [llm, tools]   # base rows this bundle depends on; boot validates them
 ```
 
@@ -152,17 +160,17 @@ Compose bundles and layers on the command line instead of environment
 variables:
 
 ```sh
-pnpm dev --bundles @cos/bundle-base,@cos/bundle-real     # real DeepSeek
-pnpm dev --overlays overlays/quiet.yml                    # quiet mode
-pnpm dev --patch my-profile/cordis.patch.yml              # profile patch
-pnpm dev --home ~/.cos/cordis.patch.yml                   # home patch (last)
-pnpm demo:sidecar --bundles @cos/bundle-real              # sidecar, same flags
+pnpm dev --bundles @cos/bundle-mock                     # mock provider (offline)
+pnpm dev --overlays overlays/quiet.yml                 # quiet mode
+pnpm dev --patch my-profile/cordis.patch.yml           # profile patch
+pnpm dev --home ~/.cos/cordis.patch.yml                # home patch (last)
+pnpm demo:sidecar --bundles @cos/bundle-mock           # sidecar, same flags
 ```
 
 `--bundles` / `--overlays` take comma-separated lists; the sidecar client's
 `args` option forwards the same flags to the spawned process. A bundle name
-resolves by scanning `node_modules/<name>` (and workspace `packages/<name>`)
-for a `cordis.patch.yml` / `bundle.yml`. An empty/comment-only patch file is a
-valid no-op bundle (e.g. `bundle-base`). Patch semantics match the include
-engine: patch a base row by `id` (replacing its `config`/`disabled`) or
+resolves by scanning `node_modules/<name>` (external bundles) and the top-level
+`bundles/<name>` directory for a `cordis.patch.yml` / `bundle.yml`. An
+empty/comment-only patch file is a valid no-op bundle. Patch semantics match the
+include engine: patch a base row by `id` (replacing its `config`/`disabled`) or
 `insert` new rows.

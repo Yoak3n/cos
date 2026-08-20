@@ -1,0 +1,7 @@
+# Overlay layer demo: run the local mock provider instead of DeepSeek (offline
+# / no-key debugging). Apply with:  set COS_OVERLAYS=overlays/mock.yml
+- id: llm-deepseek
+  disabled: true
+- insert:
+    - id: mock-llm
+      name: '@cos/mock-llm'

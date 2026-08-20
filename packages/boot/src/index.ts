@@ -36,6 +36,14 @@ export interface BootOptions {
   required?: readonly string[]
   /** HMR module watch roots; pass [] to disable module watching. */
   watchRoots?: readonly string[]
+  /**
+   * In-process plugin registry keyed by mount name (e.g. `'@cos/llm'`). When
+   * present, the loader resolves those names from this map instead of via
+   * `import()`, so a self-contained bundle (e.g. a Node SEA) needs no
+   * node_modules at runtime. Names missing from the map fall back to normal
+   * module resolution.
+   */
+  plugins?: Readonly<Record<string, unknown>>
   /** Profile user patch path (cwd/cordis.patch.yml by default). */
   userPatchPath?: string
   /** Home user patch path (X_COS_HOME/cordis.patch.yml by default), applied
@@ -190,8 +198,9 @@ function resolveBundle(spec: string | Bundle, registry: Map<string, Bundle>): Bu
   const registered = registry.get(spec)
   if (registered !== undefined) return registered
   // Candidate directory: node_modules/<spec>, then scoped node_modules/@x/<y>,
-  // then workspace packages/<name> — resolving without relying on a
-  // package.json ./package.json subpath export.
+  // then the top-level bundles/<name> (bundles are composition dirs, not
+  // workspace packages) — resolving without relying on a package.json
+  // ./package.json subpath export.
   const cwd = process.cwd()
   const scoped = spec.startsWith('@')
   const firstSlash = spec.indexOf('/')
@@ -199,7 +208,7 @@ function resolveBundle(spec: string | Bundle, registry: Map<string, Bundle>): Bu
   const candidates = [
     join(cwd, 'node_modules', spec),
     ...scoped ? [join(cwd, 'node_modules', spec.slice(0, firstSlash), unscoped)] : [],
-    join(cwd, 'packages', unscoped),
+    join(cwd, 'bundles', unscoped),
   ]
   for (const dir of candidates) {
     const patch = join(dir, 'cordis.patch.yml')
@@ -233,6 +242,7 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     extraPatches = [],
     watchRoots = ['.'],
     required = [],
+    plugins,
     userPatchPath = defaultUserPatchPath(),
     homePatchPath = defaultHomePatchPath(),
   } = options
@@ -251,8 +261,25 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     await ctx.plugin(Hmr, { root: [...watchRoots], ignored: [], debounce: 50 })
   }
   ctx.loader.builtins.include = Include
-  // Aggregate bundles from inline values plus the COS_BUNDLES environment
-  // specifier list, in order.
+  // Replace the loader's module resolver with the in-process plugin registry
+  // when one is supplied, so bundled plugins resolve without node_modules at
+  // runtime. Unregistered names fall back to the normal resolver.
+  if (plugins !== undefined) {
+    const fallback = ctx.loader.internal as
+      | { import(name: string, parent: string, options: object): Promise<unknown> }
+      | undefined
+    ctx.loader.internal = {
+      import: async (name: string): Promise<unknown> => {
+        const bundled = plugins[name]
+        if (bundled !== undefined) return bundled
+        if (fallback !== undefined) return fallback.import(name, ctx.baseUrl ?? import.meta.url, {})
+        return import(name)
+      },
+    } as never
+  }
+  // Aggregate bundles from the inline/boot values, in order. Each specifier is
+  // resolved to a directory (bundles/<name>); explicit --bundles is the only
+  // entry point — there is no environment-variable aggregation.
   const aggregate: Array<string | Bundle> = [...bundles]
   const bundleRegistry = new Map<string, Bundle>()
   const bundlePatches: PatchOptions[] = []

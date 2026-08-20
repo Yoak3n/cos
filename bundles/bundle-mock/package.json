@@ -1,5 +1,5 @@
 {
-  "name": "@cos/bundle-base",
+  "name": "@cos/bundle-mock",
   "private": true,
   "type": "module",
   "main": "./cordis.patch.yml",

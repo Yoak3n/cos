@@ -1,8 +1,0 @@
-# Bundle declaration for @cos/bundle-real — run the real DeepSeek provider
-# instead of the mock. Apply with COS_BUNDLES=@cos/bundles/real (or compose
-# bundles directly). Depends on the llm registry (from @cos/bundle-base).
-bundle:
-  id: cos:real
-  name: '@cos/bundle-real'
-  requires:
-    - llm

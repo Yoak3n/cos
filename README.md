@@ -8,11 +8,12 @@ A plugin-based agent harness built on [Cordis](https://github.com/cordiverse/cor
 cordis.yml             # 基础组装文件：每行一个插件（Loader 解析 @cos/* 包名）
 cordis.patch.yml       # 用户补丁层，boot 时自动加载（最后应用）
 overlays/              # 覆盖层：在基础 cordis.yml 之上做增删改
-packages/              # 所有 @cos/* 工作区包
+bundles/               # 组合层目录（非工作区包，用 --bundles 显式启用）
+packages/              # 所有 @cos/* 工作区插件包
   boot/                #   启动逻辑：装配树、加载补丁/覆盖层、fail-loud
   llm/                 #   适配器注册表 + 流式组装
-  llm-deepseek/        #   DeepSeek 真实适配器
-  mock-llm/            #   本地 mock 模型（默认）
+  llm-deepseek/        #   DeepSeek 真实适配器（默认）
+  mock-llm/            #   本地 mock 模型（可选，测试用）
   credentials/         #   凭据无缝（读取 secrets.yml）
   session/ persistence/ agent-loop/ tools/ ...
 main.ts                # 启动器 + 命令行驱动
@@ -32,7 +33,7 @@ pnpm install
 
 ## 快速开始
 
-### 1. 配置密钥文件（使用真实模型时需要）
+### 1. 配置密钥文件（默认真实模型需要密钥）
 
 ```sh
 cp secrets.example.yml secrets.yml
@@ -56,25 +57,27 @@ pnpm start --prompt "你好"
 pnpm start
 ```
 
-## 模型选择：mock vs 真实 DeepSeek
+## 模型选择：真实 DeepSeek（默认）vs mock
 
-默认 `cordis.yml` 挂载的是 **mock 模型**（本地回显，无需密钥、可离线调试）。想用真实 DeepSeek，用 `overlays/real.yml` 覆盖层替换即可。
+默认 `cordis.yml` 挂载的是 **真实 DeepSeek 适配器**（provider `deepseek-official`，模型 `deepseek-v4-flash`）。只要配置好 `secrets.yml` 里的 API key 即可直接用——默认就是真实模型，无需任何额外参数。
+
+想用本地 **mock 模型**（本地回显、无需密钥、可离线调试）来测试，用 `overlays/mock.yml` 覆盖层切换即可：
 
 通过环境变量（项目级默认）：
 
 ```sh
 # PowerShell
-$env:COS_OVERLAYS = "overlays/real.yml"
+$env:COS_OVERLAYS = "overlays/mock.yml"
 
 # cmd / bash
-set COS_OVERLAYS=overlays/real.yml
-export COS_OVERLAYS=overlays/real.yml
+set COS_OVERLAYS=overlays/mock.yml
+export COS_OVERLAYS=overlays/mock.yml
 ```
 
 或通过命令行参数（优先级更高，覆盖环境变量）：
 
 ```sh
-pnpm start --overlays overlays/real.yml --prompt "你好"
+pnpm start --overlays overlays/mock.yml --prompt "你好"
 ```
 
 覆盖层是可叠加的：`COS_OVERLAYS` 环境变量先应用，随后是 `--overlays` 显式参数。真实模式下 DeepSeek 的 API key 通过 `@cos/credentials` 从 `secrets.yml` 读取（key `deepseek.apiKey`）；密钥缺失时启动会 fail-loud 并给出诊断。
@@ -88,10 +91,24 @@ pnpm start --bundles <bundle>...                                # 命名 bundle 
 pnpm start --patch path/to/cordis.patch.yml                     # 指定用户补丁层
 ```
 
+## 编译成单文件可执行（Node SEA）
+
+可以把整个 sidecar（含全部 `@cos/*` 插件）打包成一个**真正单文件、无需 node_modules** 的可执行程序，适合作为对外交付的 sidecar：
+
+```sh
+pnpm run build:sea          # 产出 dist/cos-sidecar.exe
+dist/cos-sidecar.exe        # 直接运行：boot 后走 JSON-RPC（stdin/stdout）
+```
+
+- 所有插件通过 `packages/sidecar/src/plugins.ts` 的注册表静态打包进二进制，loader 运行时从注册表取，不再 `import('@cos/x')` 找 node_modules。
+- 二进制运行时从**当前工作目录**读取 `cordis.yml` / `secrets.yml`（真实 DeepSeek 仍需配套密钥文件）。
+- 构建产物在 `dist/`（已 gitignore）。构建管线见 `scripts/build-sea.mjs`（esbuild 打包 → `--experimental-sea-config` 生成 blob → postject 注入 node.exe）。
+
 ## 常用命令
 
 ```sh
-pnpm run typecheck   # 类型检查
+pnpm run typecheck   # 类型检查（TS7 原生编译器）
+pnpm run build:sea   # 打包 sidecar 为单文件可执行
 pnpm run scaffold    # 生成新插件骨架
 ```
 
@@ -104,4 +121,4 @@ pnpm run scaffold    # 生成新插件骨架
 ## 说明
 
 - 这是独立于 DeepSeek Harness 的再造/教学实现，代码与文档约定遵循仓库根目录的 `AGENTS.md`。
-- 仓库尚无提交历史（git 全为未跟踪文件），后续可按需 `git init` 后提交。
+- 仓库已 `git init` 并有首次提交；`.gitignore` 已忽略 `secrets.yml`、`.sessions/`、`node_modules/` 等，请不要把真实密钥提交进仓库。

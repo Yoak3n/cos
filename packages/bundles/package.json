@@ -5,8 +5,7 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./base": "./src/base.ts",
-    "./real": "./src/real.ts"
+    "./mock": "./src/mock.ts"
   },
   "dependencies": {
     "@cos/boot": "workspace:*",

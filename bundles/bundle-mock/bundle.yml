@@ -1,0 +1,9 @@
+# Bundle declaration for @cos/bundle-mock — run the local mock provider instead
+# of the real DeepSeek provider (offline / no-key debugging). Apply with
+# pnpm start --bundles @cos/bundle-mock (or compose bundles programmatically).
+# Depends on the llm registry, which is mounted by the base cordis.yml.
+bundle:
+  id: cos:mock
+  name: '@cos/bundle-mock'
+  requires:
+    - llm

@@ -1,4 +1,0 @@
-# @cos/bundle-base — shared core layer, applied first (empty patch; the base
-# cordis.yml already carries the core rows). A later bundle or the user patch
-# overrides rows by id.
-# (intentionally empty — base rows live in the root cordis.yml)

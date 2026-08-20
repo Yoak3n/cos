@@ -146,10 +146,10 @@ function main(): void {
   console.log('next:')
   console.log(`  cd ${target}`)
   console.log('  pnpm install')
-  console.log('  pnpm dev                  # boots the tree (mock provider)')
+  console.log('  pnpm dev                  # boots the tree (DeepSeek real provider)')
   console.log('  pnpm start --prompt "hi"  # drive one agent from the CLI')
   console.log('  # or run the sidecar server:', `${target}/packages/sidecar/src/server.ts`)
-  console.log(`  set COS_OVERLAYS=overlays/real.yml  # switch to DeepSeek (DEEPSEEK_API_KEY in .env)`)
+  console.log(`  set COS_OVERLAYS=overlays/mock.yml  # switch to the mock provider (offline)`)
   console.log('edit cordis.patch.yml to add your own plugins on the user layer.')
 }
 

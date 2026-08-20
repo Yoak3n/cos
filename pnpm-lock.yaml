@@ -29,12 +29,6 @@ importers:
       '@cos/boot':
         specifier: workspace:*
         version: link:packages/boot
-      '@cos/bundle-base':
-        specifier: workspace:*
-        version: link:packages/bundle-base
-      '@cos/bundle-real':
-        specifier: workspace:*
-        version: link:packages/bundle-real
       '@cos/bundles':
         specifier: workspace:*
         version: link:packages/bundles
@@ -90,6 +84,12 @@ importers:
       '@types/node':
         specifier: ^26.2.0
         version: 26.2.0
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+      postject:
+        specifier: 1.0.0-alpha.6
+        version: 1.0.0-alpha.6
       tsx:
         specifier: ^4.23.12
         version: 4.23.12
@@ -147,10 +147,6 @@ importers:
       yaml:
         specifier: ^2.4.0
         version: 2.4.0
-
-  packages/bundle-base: {}
-
-  packages/bundle-real: {}
 
   packages/bundles:
     dependencies:
@@ -241,9 +237,45 @@ importers:
 
   packages/sidecar:
     dependencies:
+      '@cos/agent-loop':
+        specifier: workspace:*
+        version: link:../agent-loop
+      '@cos/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@cos/boot':
         specifier: workspace:*
         version: link:../boot
+      '@cos/credentials':
+        specifier: workspace:*
+        version: link:../credentials
+      '@cos/llm':
+        specifier: workspace:*
+        version: link:../llm
+      '@cos/llm-deepseek':
+        specifier: workspace:*
+        version: link:../llm-deepseek
+      '@cos/mock-llm':
+        specifier: workspace:*
+        version: link:../mock-llm
+      '@cos/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@cos/persona':
+        specifier: workspace:*
+        version: link:../persona
+      '@cos/scope':
+        specifier: workspace:*
+        version: link:../scope
+      '@cos/session':
+        specifier: workspace:*
+        version: link:../session
+      '@cos/system-prompt':
+        specifier: workspace:*
+        version: link:../system-prompt
+      '@cos/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@cos/types':
         specifier: workspace:*
         version: link:../types
@@ -599,6 +631,10 @@ packages:
     resolution: {integrity: sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==}
     engines: {node: '>= 14.16.0'}
 
+  commander@9.5.0:
+    resolution: {integrity: sha512-KRs7WVDKg86PWiuAqhDrAQnTXZKraVcCc6vFdL14qrZ/DcWwuRo7VoiYXalXO7S5GKpqYiVEwCbgFDfxNHKJBQ==}
+    engines: {node: ^12.20.0 || >=14}
+
   cordis@4.0.0-rc.7:
     resolution: {integrity: sha512-5nm6ehrSfJhEUV659CctEvyNuBY/AXapw8+ZEw7YENztdzpiT+Ha8nIfkyhfyAgPtJns9aB5On5nzl9Sm6zHeQ==}
     hasBin: true
@@ -640,6 +676,11 @@ packages:
   picomatch@4.0.5:
     resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
     engines: {node: '>=12'}
+
+  postject@1.0.0-alpha.6:
+    resolution: {integrity: sha512-b9Eb8h2eVqNE8edvKdwqkrY6O7kAwmI8kcnBv1NScolYJbo59XUF0noFq+lxbC1yN20bmC0WBEbDC5H/7ASb0A==}
+    engines: {node: '>=14.0.0'}
+    hasBin: true
 
   readdirp@4.1.2:
     resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
@@ -855,6 +896,8 @@ snapshots:
     dependencies:
       readdirp: 4.1.2
 
+  commander@9.5.0: {}
+
   cordis@4.0.0-rc.7(@cordisjs/plugin-include@1.0.4)(@cordisjs/plugin-loader@1.0.0-rc.5):
     dependencies:
       '@standard-schema/spec': 1.1.0
@@ -914,6 +957,10 @@ snapshots:
   picocolors@1.1.1: {}
 
   picomatch@4.0.5: {}
+
+  postject@1.0.0-alpha.6:
+    dependencies:
+      commander: 9.5.0
 
   readdirp@4.1.2: {}
 

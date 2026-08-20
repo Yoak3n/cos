@@ -6,6 +6,7 @@
     "dev": "tsx --expose-internals main.ts",
     "start": "tsx --expose-internals main.ts",
     "typecheck": "tsc --noEmit",
+    "build:sea": "node scripts/build-sea.mjs",
     "scaffold": "tsx scripts/scaffold.ts"
   },
   "dependencies": {
@@ -16,8 +17,6 @@
     "@cos/agent-loop": "workspace:*",
     "@cos/agents": "workspace:*",
     "@cos/boot": "workspace:*",
-    "@cos/bundle-base": "workspace:*",
-    "@cos/bundle-real": "workspace:*",
     "@cos/bundles": "workspace:*",
     "@cos/credentials": "workspace:*",
     "@cos/llm": "workspace:*",
@@ -38,6 +37,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "esbuild": "^0.28.2",
+    "postject": "1.0.0-alpha.6",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }

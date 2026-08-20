@@ -6,10 +6,25 @@
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
-    "./client": "./src/client.ts"
+    "./client": "./src/client.ts",
+    "./sidecar": "./src/sidecar.ts",
+    "./plugins": "./src/plugins.ts",
+    "./sea": "./src/sea.ts"
   },
   "dependencies": {
+    "@cos/agent-loop": "workspace:*",
+    "@cos/agents": "workspace:*",
     "@cos/boot": "workspace:*",
+    "@cos/credentials": "workspace:*",
+    "@cos/llm": "workspace:*",
+    "@cos/llm-deepseek": "workspace:*",
+    "@cos/mock-llm": "workspace:*",
+    "@cos/persistence": "workspace:*",
+    "@cos/persona": "workspace:*",
+    "@cos/scope": "workspace:*",
+    "@cos/session": "workspace:*",
+    "@cos/system-prompt": "workspace:*",
+    "@cos/tools": "workspace:*",
     "@cos/types": "workspace:*",
     "cordis": "4.0.0-rc.7"
   }

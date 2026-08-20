@@ -22,18 +22,17 @@
   name: '@cos/persona'
 - id: tools
   name: '@cos/tools'
-- id: mock-llm
-  name: '@cos/mock-llm'
-# DeepSeek adapter — mount alongside or instead of the mock row above: the
-# registry holds both providers and the agent's route selects which serves.
-# Its API key resolves through the credentials seam (key `deepseek.apiKey` in
-# the configured secrets file, see the credentials row above) and is required —
-# mounting this row without a key fails loud at load, not at request.
-# - id: llm-deepseek
-#   name: '@cos/llm-deepseek'
-#   config:
-#     baseUrl: https://api.deepseek.com
-#     defaultModel: deepseek-v4-flash
+- id: llm-deepseek
+  name: '@cos/llm-deepseek'
+  config:
+    baseUrl: https://api.deepseek.com
+    defaultModel: deepseek-v4-flash
+# Mock adapter — optional test provider for offline / no-key runs. The registry
+# holds both providers and the agent's route selects which serves; the real
+# DeepSeek row above is the default. To use the mock, disable this DeepSeek row
+# and mount the mock, or apply overlays/mock.yml:
+# - id: mock-llm
+#   name: '@cos/mock-llm'
 - id: agents
   name: '@cos/agents'
 - id: agent-loop
