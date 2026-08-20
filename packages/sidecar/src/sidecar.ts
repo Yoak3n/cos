@@ -14,6 +14,7 @@ import type { BootOptions } from '@cos/boot'
 import { SessionId, createUserMessage } from '@cos/types'
 import type { Agent } from '@cos/types'
 import type { SessionEvent, SessionId as SessionIdType } from '@cos/types'
+import type { Context } from 'cordis'
 
 // Protocol stdout must stay clean: userland console.log lands on stderr.
 console.log = (...args: unknown[]) => console.error(...args)
@@ -39,13 +40,13 @@ function respond(id: number | string | undefined, error: RpcError | null, result
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, ...(error === null ? { result } : { error }) }) + '\n')
 }
 
-function requireAgent(ctx: import('cordis').Context, sessionId: string): Agent {
+function requireAgent(ctx: Context, sessionId: string): Agent {
   const agent = ctx.agents.get(SessionId(sessionId))
   if (agent === undefined) throw new RpcError(404, `no agent with sessionId "${sessionId}"`)
   return agent
 }
 
-async function handle(ctx: import('cordis').Context, req: Request): Promise<unknown> {
+async function handle(ctx: Context, req: Request): Promise<unknown> {
   const params = req.params ?? {}
   switch (req.method) {
     case 'ping':
@@ -92,6 +93,41 @@ async function handle(ctx: import('cordis').Context, req: Request): Promise<unkn
 }
 
 /**
+ * Serve newline-delimited JSON-RPC over stdin/stdout on an already-booted
+ * harness context. Emits `sidecar-ready` on start, then answers requests until
+ * stdin closes (EOF) or the underlying stream is ended.
+ * @param ctx - a booted context with `agents`, `llm`, and `agentLoop` ready.
+ */
+export async function serve(ctx: Context): Promise<void> {
+  process.stdout.write(JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'sidecar-ready',
+    params: { providers: ctx.llm.listProviders() },
+  }) + '\n')
+
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
+  await new Promise<void>((resolve) => {
+    rl.on('line', (line) => {
+      if (line === '') return
+      let req: Request
+      try {
+        req = JSON.parse(line) as Request
+      } catch {
+        respond(undefined, new RpcError(-32700, 'parse error'))
+        return
+      }
+      void handle(ctx, req)
+        .then((result) => respond(req.id, null, result))
+        .catch((error: unknown) => respond(
+          req.id,
+          error instanceof RpcError ? error : new RpcError(-32603, String(error)),
+        ))
+    })
+    rl.on('close', resolve)
+  })
+}
+
+/**
  * Boot the sidecar tree and serve JSON-RPC until stdin closes.
  * @param overrides - extra @cos/boot options (plugin registry, HMR, required).
  */
@@ -101,27 +137,5 @@ export async function main(overrides: Partial<BootOptions> = {}): Promise<void> 
     required: ['agentLoop', 'llm', 'tools', 'sessions', 'agents', 'systemPrompt', 'credentials'],
     ...overrides,
   }))
-  process.stdout.write(JSON.stringify({
-    jsonrpc: '2.0',
-    method: 'sidecar-ready',
-    params: { providers: ctx.llm.listProviders() },
-  }) + '\n')
-
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
-  rl.on('line', (line) => {
-    if (line === '') return
-    let req: Request
-    try {
-      req = JSON.parse(line) as Request
-    } catch {
-      respond(undefined, new RpcError(-32700, 'parse error'))
-      return
-    }
-    void handle(ctx, req)
-      .then((result) => respond(req.id, null, result))
-      .catch((error: unknown) => respond(
-        req.id,
-        error instanceof RpcError ? error : new RpcError(-32603, String(error)),
-      ))
-  })
+  await serve(ctx)
 }

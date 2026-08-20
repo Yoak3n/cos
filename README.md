@@ -51,11 +51,42 @@ pnpm start --prompt "你好"
 # 等价：pnpm dev -- --prompt "你好"
 ```
 
-不带 `--prompt` 启动时只做一次就绪自检（boot 整棵树后干净退出），可用于判断装配是否成功：
+不带 `--prompt` 时，进程**常驻**并作为 **JSON-RPC 服务**在 `stdin/stdout` 上服务（与 `@cos/sidecar` 共用同一套新行分隔 JSON-RPC 协议，实现只有一份），供上一层应用驱动 agent，直到 `stdin` 关闭（EOF）才退出：
 
 ```sh
-pnpm start
+pnpm start    # 启动 JSON-RPC sidecar，等上一层应用通过 stdin/stdout 通信
 ```
+
+### 3. 通过 JSON-RPC 与上一层应用通信
+
+这是与上层应用集成的标准通道。协议基于 **新行分隔的 JSON-RPC 2.0**：每一行一个请求/响应，一行一个 `sidecar-ready` 通知（启动后先发）。上层应用可以直接用 `@cos/sidecar/client`（负责 spawn 进程并收发消息），也可以自己按协议用任意语言实现客户端：
+
+- 启动后服务端先输出一行 `sidecar-ready`（含 providers）。
+- 请求方法（每行 `{"jsonrpc":"2.0","id":N,"method":"…","params":{…}}`）：
+  - `ping` → `{ ok, providers }`
+  - `system.listProviders` / `system.model`
+  - `agent.create`（可指定 `sessionId` / `agentOptions` / `meta` / `resume`）
+  - `agent.followup`（向 agent 发一条用户消息）
+  - `agent.whenIdle` / `agent.status`
+  - `session.events`（读取会话事件流，含间隔 `since`）
+- 示例（TypeScript，用内置客户端）：
+
+```ts
+import { SidecarClient } from '@cos/sidecar/client'
+
+const sidecar = new SidecarClient({ cwd: 'E:/Project/VueProject/cos' })
+await sidecar.ready
+const { agent } = await sidecar.request('agent.create', {
+  agentOptions: { provider: 'mock', model: 'mock-1' },
+})
+sidecar.request('agent.followup', { sessionId: agent, text: '你好', source: 'cli' })
+await sidecar.request('agent.whenIdle', { sessionId: agent })
+const { events } = await sidecar.request('session.events', { sessionId: agent })
+console.log(events.at(-1))
+sidecar.dispose()
+```
+
+> 同一套 JSON-RPC 服务也会被 `pnpm run build:sea` 打包进单文件可执行（见下文），两种入口协议完全一致。
 
 ## 模型选择：真实 DeepSeek（默认）vs mock
 
