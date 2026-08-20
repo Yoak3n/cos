@@ -1,0 +1,5 @@
+.env
+secrets.yml
+.sessions/
+node_modules/
+main.js

@@ -1,0 +1,5 @@
+# Overlay layer demo: quiet mode — turn off the per-request system-prompt
+# debug printing. Apply with:  set COS_OVERLAYS=overlays/quiet.yml
+- id: agent-loop
+  config:
+    debugSystemPrompt: false

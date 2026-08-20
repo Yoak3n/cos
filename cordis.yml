@@ -1,0 +1,42 @@
+# Cordis composition for the harness: every row is one source plugin living in
+# its own workspace package under packages/ (Loader resolves bare @cos/*
+# names; tsx or Node type-stripping transpiles the .ts). Load order is
+# expressed through each service's `static inject`, not by row order.
+- id: llm
+  name: '@cos/llm'
+- id: credentials
+  name: '@cos/credentials'
+  config:
+    # Secrets file backing file-sourced credentials (e.g. deepseek.apiKey).
+    # gitignored; see secrets.example.yml for the shape.
+    file: ./secrets.yml
+- id: session
+  name: '@cos/session'
+- id: persistence
+  name: '@cos/persistence'
+  config:
+    root: ./.sessions
+- id: system-prompt
+  name: '@cos/system-prompt'
+- id: persona
+  name: '@cos/persona'
+- id: tools
+  name: '@cos/tools'
+- id: mock-llm
+  name: '@cos/mock-llm'
+# DeepSeek adapter — mount alongside or instead of the mock row above: the
+# registry holds both providers and the agent's route selects which serves.
+# Its API key resolves through the credentials seam (key `deepseek.apiKey` in
+# the configured secrets file, see the credentials row above) and is required —
+# mounting this row without a key fails loud at load, not at request.
+# - id: llm-deepseek
+#   name: '@cos/llm-deepseek'
+#   config:
+#     baseUrl: https://api.deepseek.com
+#     defaultModel: deepseek-v4-flash
+- id: agents
+  name: '@cos/agents'
+- id: agent-loop
+  name: '@cos/agent-loop'
+  config:
+    debugSystemPrompt: false

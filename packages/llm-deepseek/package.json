@@ -1,0 +1,15 @@
+{
+  "name": "@cos/llm-deepseek",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@cos/credentials": "workspace:*",
+    "@cos/llm": "workspace:*",
+    "@cos/types": "workspace:*",
+    "cordis": "4.0.0-rc.7"
+  }
+}

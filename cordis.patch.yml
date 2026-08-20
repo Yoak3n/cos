@@ -1,0 +1,11 @@
+# User patch layer — the LAST layer applied on top of base row's and every
+# overlay (DSH's home-level cordis.patch.yml analog: the user / outer program
+# has the final say). Patch semantics match the include patch engine:
+#   - `insert:` adds new rows (mounted by bare package name from node_modules)
+#   - `id: + fields` patches an existing row (config/disabled/...)
+# Auto-loaded by @cos/boot from the cwd (or COS_PATCH=<path>).
+- insert:
+    - id: hello-external
+      name: hello-external
+      config:
+        text: Greetings from a third-party plugin installed outside the workspace.

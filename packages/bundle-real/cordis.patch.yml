@@ -1,0 +1,9 @@
+# @cos/bundle-real — run the real DeepSeek provider instead of the mock.
+- id: mock-llm
+  disabled: true
+- insert:
+    - id: llm-deepseek
+      name: '@cos/llm-deepseek'
+      config:
+        baseUrl: https://api.deepseek.com
+        defaultModel: deepseek-v4-flash

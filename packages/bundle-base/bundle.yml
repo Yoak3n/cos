@@ -1,0 +1,11 @@
+# Bundle declaration for @cos/bundle-base — the shared core layer this
+# harness applies first over the config root. The boot resolver reads this
+# file to discover the bundle's patch and to validate its base dependencies.
+bundle:
+  id: cos:base
+  name: '@cos/bundle-base'
+  # Rows this bundle REQUIRES to exist in the layer below it (base rows).
+  requires:
+    - llm
+    - session
+    - tools

@@ -1,0 +1,44 @@
+{
+  "name": "cos",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --expose-internals main.ts",
+    "start": "tsx --expose-internals main.ts",
+    "typecheck": "tsc --noEmit",
+    "scaffold": "tsx scripts/scaffold.ts"
+  },
+  "dependencies": {
+    "@cordisjs/plugin-hmr": "^1.0.15",
+    "@cordisjs/plugin-include": "1.0.4",
+    "@cordisjs/plugin-loader": "1.0.0-rc.5",
+    "@cordisjs/plugin-timer": "1.1.2",
+    "@cos/agent-loop": "workspace:*",
+    "@cos/agents": "workspace:*",
+    "@cos/boot": "workspace:*",
+    "@cos/bundle-base": "workspace:*",
+    "@cos/bundle-real": "workspace:*",
+    "@cos/bundles": "workspace:*",
+    "@cos/credentials": "workspace:*",
+    "@cos/llm": "workspace:*",
+    "@cos/llm-deepseek": "workspace:*",
+    "@cos/mock-llm": "workspace:*",
+    "@cos/persistence": "workspace:*",
+    "@cos/persona": "workspace:*",
+    "@cos/scope": "workspace:*",
+    "@cos/session": "workspace:*",
+    "@cos/sidecar": "workspace:*",
+    "@cos/system-prompt": "workspace:*",
+    "@cos/tools": "workspace:*",
+    "@cos/types": "workspace:*",
+    "@deepseek-ai/cordis": "npm:cordis@4.0.0-rc.7",
+    "cordis": "4.0.0-rc.7",
+    "hello-external": "file:..\\cos-plugins\\hello-external",
+    "yaml": "2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}

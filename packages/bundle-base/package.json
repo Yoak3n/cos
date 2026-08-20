@@ -1,0 +1,9 @@
+{
+  "name": "@cos/bundle-base",
+  "private": true,
+  "type": "module",
+  "main": "./cordis.patch.yml",
+  "exports": {
+    ".": "./cordis.patch.yml"
+  }
+}
