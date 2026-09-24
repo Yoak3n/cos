@@ -4,8 +4,11 @@
 #   - `insert:` adds new rows (mounted by bare package name from node_modules)
 #   - `id: + fields` patches an existing row (config/disabled/...)
 # Auto-loaded by @cos/boot from the cwd (or COS_PATCH=<path>).
-- insert:
-    - id: hello-external
-      name: hello-external
-      config:
-        text: Greetings from a third-party plugin installed outside the workspace.
+#
+# Third-party demo (optional): install `hello-external` next to the repo
+# (`pnpm add file:../cos-plugins/hello-external`) then uncomment:
+# - insert:
+#     - id: hello-external
+#       name: hello-external
+#       config:
+#         text: Greetings from a third-party plugin installed outside the workspace.
