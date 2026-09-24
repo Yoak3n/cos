@@ -1,0 +1,17 @@
+{
+  "name": "@deepseek-ai/dsh-tools",
+  "version": "0.1.2-rc.1",
+  "description": "DSH-compatible tool schema helpers (defineTool) backed by @cos/tools. Drop-in import surface for deepseek-harness tool plugins.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "cordis": "^4.0.0-rc.7"
+  }
+}

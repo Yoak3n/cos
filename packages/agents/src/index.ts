@@ -7,7 +7,7 @@
 
 import { Service } from 'cordis'
 import type { Context } from 'cordis'
-import type { Agent, SessionId } from '@cos/types'
+import type { Agent, AgentHandle, AgentOptions, SessionEvent, SessionId } from '@cos/types'
 
 declare module 'cordis' {
   interface Context {
@@ -66,6 +66,59 @@ export class AgentsRegistry extends Service {
 
   get(id: SessionId): Agent | undefined {
     return this.store.get(id)?.agent
+  }
+
+  /**
+   * DSH shape: create a live agent on a fresh session.
+   * Delegates to `ctx.agentLoop.createAgent` (cos loop owns session minting).
+   */
+  async create(options: {
+    sessionId: SessionId
+    meta?: { cwd?: string; ephemeral?: boolean }
+    seed?: readonly SessionEvent[]
+    agentOptions?: AgentOptions
+    signal?: AbortSignal
+  }): Promise<AgentHandle> {
+    const loop = this.agentLoop()
+    return loop.createAgent({
+      sessionId: options.sessionId,
+      meta: options.meta,
+      agentOptions: options.agentOptions,
+      resume: false,
+    })
+  }
+
+  /**
+   * DSH shape: resume a persisted session onto a live agent.
+   * `resumeSessionId` is the durable id; cos loads seed via sessionPersistence.
+   */
+  async resume(options: {
+    resumeSessionId: SessionId
+    agentOptions?: AgentOptions
+    signal?: AbortSignal
+  }): Promise<AgentHandle> {
+    const loop = this.agentLoop()
+    return loop.createAgent({
+      sessionId: options.resumeSessionId,
+      agentOptions: options.agentOptions,
+      resume: true,
+    })
+  }
+
+  /** Late-bound loop (avoids a hard inject cycle with @cos/agent-loop). */
+  private agentLoop(): {
+    createAgent(options: {
+      sessionId?: SessionId
+      agentOptions?: AgentOptions
+      meta?: { cwd?: string; ephemeral?: boolean }
+      resume?: boolean
+    }): Promise<AgentHandle>
+  } {
+    const loop = (this.ctx as Context & { agentLoop?: { createAgent: unknown } }).agentLoop
+    if (loop === undefined || typeof loop.createAgent !== 'function') {
+      throw new Error('agents.create/resume: ctx.agentLoop is not available')
+    }
+    return loop as ReturnType<AgentsRegistry['agentLoop']>
   }
 
   /** Remove a live entry; emits `agent/disposed` only for announced agents. */

@@ -1,0 +1,16 @@
+{
+  "name": "@cos/profile",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "DSH-aligned profile model for the cos harness: a profile is a directory under <home>/profiles/<name> holding its own package.json (dsh.profile.bundles + out-of-tree plugin dependencies), node_modules (pnpm-managed), and cordis.patch.yml. Provides two-anchor bundle resolution, the flat module fallback, profile init, and bundle reconciliation.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "yaml": "2.4.0"
+  }
+}

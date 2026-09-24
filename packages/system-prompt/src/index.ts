@@ -145,6 +145,7 @@ export class SystemPrompt extends Service {
         const sections: AssembledSection[] = sectionDefs.map((spec) => ({
             name: spec.name,
             text: typeof spec.text === 'function' ? spec.text(context) : spec.text,
+            order: spec.order,
         }))
         const tools: WireTool[] = this.ctx.tools.listDefinitions().map(({ name, schema }) => ({
             type: 'function',

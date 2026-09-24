@@ -1,0 +1,16 @@
+{
+  "name": "@deepseek-ai/dsh-llm",
+  "version": "0.1.2-rc.1",
+  "description": "DSH-compatible LLM adapter surface (LlmAdapter, StreamChunk, …) backed by @cos/llm and @cos/types.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@cos/llm": "workspace:*",
+    "@cos/types": "workspace:*"
+  }
+}

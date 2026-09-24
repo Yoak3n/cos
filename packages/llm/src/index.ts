@@ -8,6 +8,8 @@
  * @module @cos/llm
  */
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Service } from 'cordis'
 import type { Context } from 'cordis'
 import type { GenerateOptions, LlmCallConfig, ModelBlock, StreamChunk } from '@cos/types'
@@ -35,6 +37,38 @@ export interface LlmProviderInfo {
   name: string
 }
 
+/** One configurable field of a provider route — owned by the adapter, rendered
+ * by any configuration surface (e.g. the web settings panel). */
+export interface AdapterConfigField {
+  /** Field identity: a credential ref when `store === 'credentials'`, a raw
+   * provider-scoped settings key when `store === 'settings'`. */
+  key: string
+  label: string
+  type?: 'password' | 'text' | 'select'
+  /** Sensitive field: surfaces only expose a `configured` boolean, never the value. */
+  secret?: boolean
+  /** Persistence: the credentials seam (secret) or a plain settings namespace
+   * (the consumer applies `<provider>.<key>` into its settings store). */
+  store?: 'credentials' | 'settings'
+  /** store=credentials: explicit credential ref; defaults to `<provider>.<key>`. */
+  credentialRef?: string
+  /** store=credentials: fallback environment variable checked when the credential is unresolved. */
+  envKey?: string
+  required?: boolean
+  placeholder?: string
+  hint?: string
+  options?: string[]
+}
+
+/** A provider route's configuration declaration, declared by its owning adapter
+ * so the harness never hardcodes provider-specific configuration knowledge. */
+export interface ProviderConfigDecl {
+  provider: string
+  name: string
+  description?: string
+  fields: readonly AdapterConfigField[]
+}
+
 /** Exact-model metadata an adapter may resolve, parallel to dsh-llm. */
 export interface ResolvedModelInfo {
   provider: string
@@ -54,9 +88,39 @@ export abstract class LlmAdapter {
     return { id: provider, name: provider }
   }
 
+  /**
+   * Read a provider-scoped runtime setting (e.g. `baseUrl`) from the cos home
+   * settings file (`$COS_HOME/cos-settings.json`, key `<provider>.<key>`).
+   *
+   * The shell/backend writes these via the settings UI (`store: 'settings'`
+   * fields); adapters should prefer this at call time over a construction-time
+   * default so config changes take effect without a sidecar restart.
+   *
+   * Returns `undefined` when the file/value is absent (caller falls back).
+   */
+  protected settingsValue(provider: string, key: string): string | undefined {
+    const home = process.env.COS_HOME ?? ''
+    if (home === '') return undefined
+    try {
+      const content = readFileSync(join(home, 'cos-settings.json'), 'utf8')
+      const settings = JSON.parse(content) as Record<string, unknown>
+      const value = settings[`${provider}.${key}`]
+      return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Models this adapter advertises for one owned provider, advisory only. */
   async listModels(_provider: string): Promise<readonly string[]> {
     return []
+  }
+
+  /** Configuration surface for one owned provider route. A configuration panel
+   * (e.g. the web settings view) renders these fields; a provider returning
+   * `undefined` needs no configuration. */
+  providerConfig(_provider: string): ProviderConfigDecl | undefined {
+    return undefined
   }
 
   /** Resolve exact-model identity (no routing/validation side effects). */
@@ -89,11 +153,13 @@ export class BlockAssembler {
         ? { type: 'text', text: '' }
         : { type: 'tool-call', id: '', name: '', arguments: '' })
     } else if (chunk.type === 'text-delta') {
-      if (!this.open.has(chunk.index)) throw new LlmError(`text-delta without open block ${chunk.index}`, 'INVALID_STREAM')
+      if (!this.open.has(chunk.index)) throw new LlmError('INVALID_STREAM', `text-delta without open block ${chunk.index}`)
       const block = this.blockMap.get(chunk.index)
       if (block !== undefined && block.type === 'text') block.text += chunk.text
+    } else if (chunk.type === 'thinking-delta') {
+      // 推理 CoT 不进入 ModelBlock（不回传模型、不进 derived history）
     } else if (chunk.type === 'tool-call-delta') {
-      if (!this.open.has(chunk.index)) throw new LlmError(`tool-call-delta without open block ${chunk.index}`, 'INVALID_STREAM')
+      if (!this.open.has(chunk.index)) throw new LlmError('INVALID_STREAM', `tool-call-delta without open block ${chunk.index}`)
       const block = this.blockMap.get(chunk.index)
       if (block !== undefined && block.type === 'tool-call') {
         if (block.id === '') block.id = chunk.id
@@ -101,7 +167,7 @@ export class BlockAssembler {
         block.arguments += chunk.argumentsDelta
       }
     } else if (chunk.type === 'block-end') {
-      if (!this.open.delete(chunk.index)) throw new LlmError(`block-end without open block ${chunk.index}`, 'INVALID_STREAM')
+      if (!this.open.delete(chunk.index)) throw new LlmError('INVALID_STREAM', `block-end without open block ${chunk.index}`)
       const existing = this.blockMap.get(chunk.index)
       if (chunk.block.type === 'text' && existing !== undefined) {
         // Text content is carried by deltas; the finalization payload for a
@@ -147,17 +213,17 @@ export class LlmRuntime extends Service {
   registerAdapter(providers: readonly string[], adapter: LlmAdapter): () => void {
     const owned = new Set<string>()
     const commit = (): void => {
-      if (providers.length === 0) throw new LlmError('an adapter must register at least one provider', 'INVALID_ADAPTER')
+      if (providers.length === 0) throw new LlmError('INVALID_ADAPTER', 'an adapter must register at least one provider')
       for (const provider of providers) {
-        if (provider.length === 0) throw new LlmError('adapter provider names must be non-empty', 'INVALID_ADAPTER')
+        if (provider.length === 0) throw new LlmError('INVALID_ADAPTER', 'adapter provider names must be non-empty')
         if (this.adapters.has(provider) && !owned.has(provider)) {
-          throw new LlmError(`an adapter for provider "${provider}" is already registered`, 'DUPLICATE_ADAPTER')
+          throw new LlmError('DUPLICATE_ADAPTER', `an adapter for provider "${provider}" is already registered`)
         }
       }
       for (const provider of providers) {
         const info = adapter.providerInfo(provider)
         if (info.id !== provider || info.name.length === 0) {
-          throw new LlmError(`adapter metadata for provider "${provider}" must preserve its id`, 'INVALID_ADAPTER')
+          throw new LlmError('INVALID_ADAPTER', `adapter metadata for provider "${provider}" must preserve its id`)
         }
         this.adapters.set(provider, { adapter, provider: { ...info } })
         owned.add(provider)
@@ -178,6 +244,23 @@ export class LlmRuntime extends Service {
     return [...this.adapters.values()].map(({ provider }) => ({ ...provider }))
   }
 
+  /** Configuration declarations of provider routes whose adapter declared one,
+   * in registration order — the provider-config surface is adapter-owned. */
+  listProviderConfigs(): ProviderConfigDecl[] {
+    const out: ProviderConfigDecl[] = []
+    for (const { adapter, provider } of this.adapters.values()) {
+      const decl = adapter.providerConfig(provider.id)
+      if (decl !== undefined) out.push(decl)
+    }
+    return out
+  }
+
+  /** One provider's configuration declaration, when its adapter declared one. */
+  adapterConfig(provider: string): ProviderConfigDecl | undefined {
+    const registration = this.find(provider)
+    return registration?.adapter.providerConfig(provider)
+  }
+
   /** Models one registered provider advertises, advisory only. */
   async listModels(provider: string): Promise<readonly string[]> {
     return this.registration(provider).adapter.listModels(provider)
@@ -195,8 +278,8 @@ export class LlmRuntime extends Service {
     const registration = this.registration(config.provider)
     if (config.model === '') {
       throw new LlmError(
-        `provider "${config.provider}" requires an explicit model; set AgentOptions.model (advertised: ${(await this.listModels(config.provider)).join(', ')})`,
         'NO_MODEL',
+        `provider "${config.provider}" requires an explicit model; set AgentOptions.model (advertised: ${(await this.listModels(config.provider)).join(', ')})`,
       )
     }
     await registration.adapter.resolveModel(config.provider, config.model, signal)
@@ -214,12 +297,16 @@ export class LlmRuntime extends Service {
   }
 
   private registration(provider: string): Registration {
-    const registration = this.adapters.get(provider)
+    const registration = this.find(provider)
     if (registration === undefined) {
       const available = [...this.adapters.keys()].join(', ') || 'none'
-      throw new LlmError(`no adapter registered for provider "${provider}" (registered: ${available})`, 'NO_ADAPTER')
+      throw new LlmError('NO_ADAPTER', `no adapter registered for provider "${provider}" (registered: ${available})`)
     }
     return registration
+  }
+
+  private find(provider: string): Registration | undefined {
+    return this.adapters.get(provider)
   }
 
   /** Dispatch through the adapter; adapter failures throw to the caller. */

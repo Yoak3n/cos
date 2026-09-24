@@ -1,0 +1,15 @@
+{
+  "name": "@deepseek-ai/dsh-agent",
+  "version": "0.1.2-rc.1",
+  "description": "DSH-compatible agent registry surface (create/resume) backed by @cos/agent-loop + @cos/agents.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@cos/types": "workspace:*"
+  }
+}

@@ -23,6 +23,8 @@
     "@cos/persona": "workspace:*",
     "@cos/scope": "workspace:*",
     "@cos/session": "workspace:*",
+    "@cos/skills": "workspace:*",
+    "@cos/subagents": "workspace:*",
     "@cos/system-prompt": "workspace:*",
     "@cos/tools": "workspace:*",
     "@cos/types": "workspace:*",

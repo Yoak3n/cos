@@ -15,13 +15,18 @@
 - id: persistence
   name: '@cos/persistence'
   config:
-    root: ./.sessions
+    # Storage under COS_HOME (or cwd): `root: sessions` → `$COS_HOME/sessions`.
+    # format: standard (generic agent event stream) | internal (raw SessionEvent)
+    # segmentBytes / maxSegments bound long-lived session growth.
+    root: sessions
 - id: system-prompt
   name: '@cos/system-prompt'
 - id: persona
   name: '@cos/persona'
 - id: tools
   name: '@cos/tools'
+- id: skills
+  name: '@cos/skills'
 - id: llm-deepseek
   name: '@cos/llm-deepseek'
   config:
@@ -39,3 +44,8 @@
   name: '@cos/agent-loop'
   config:
     debugSystemPrompt: false
+- id: subagents
+  name: '@cos/subagents'
+  config:
+    # worker 单次运行的默认墙上时钟上限（超时则 cancel 该 worker agent）
+    defaultTimeoutMs: 120000

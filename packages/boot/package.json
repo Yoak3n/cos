@@ -11,6 +11,7 @@
     "@cordisjs/plugin-include": "1.0.4",
     "@cordisjs/plugin-loader": "1.0.0-rc.5",
     "@cordisjs/plugin-timer": "1.1.2",
+    "@cos/profile": "workspace:*",
     "@cos/types": "workspace:*",
     "cordis": "4.0.0-rc.7",
     "yaml": "^2.4.0"

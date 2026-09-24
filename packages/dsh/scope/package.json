@@ -1,0 +1,15 @@
+{
+  "name": "@deepseek-ai/dsh-scope",
+  "version": "0.1.2-rc.1",
+  "description": "DSH-compatible scope helpers backed by @cos/scope.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@cos/scope": "workspace:*"
+  }
+}

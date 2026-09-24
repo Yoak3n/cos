@@ -1,4 +1,6 @@
 packages:
   - packages/*
+  - packages/dsh/*
+confirmModulesPurge: false
 allowBuilds:
   esbuild: true

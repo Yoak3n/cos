@@ -9,7 +9,7 @@
 
 import type { Context } from 'cordis'
 import { LlmAdapter } from '@cos/llm'
-import type { LlmProviderInfo } from '@cos/llm'
+import type { LlmProviderInfo, ProviderConfigDecl } from '@cos/llm'
 import type { GenerateOptions, ModelMessage, StreamChunk } from '@cos/types'
 
 export const name = 'mock-llm'
@@ -63,6 +63,16 @@ class MockLlmAdapter extends LlmAdapter {
   async listModels(provider: string): Promise<readonly string[]> {
     if (provider !== MOCK_PROVIDER) return []
     return ['mock-1']
+  }
+
+  /** Adapter-owned configuration surface: the mock needs no configuration. */
+  providerConfig(provider: string): ProviderConfigDecl {
+    return {
+      provider,
+      name: 'Mock provider',
+      description: '本地 mock 适配器（离线 / 无 key 调试）。',
+      fields: [],
+    }
   }
 
   async *stream(request: GenerateOptions): AsyncGenerator<StreamChunk> {

@@ -20,6 +20,8 @@ export function SessionId(id: string): SessionId {
 /** Model-visible message content blocks. */
 export type MessageContent = Array<
   | { type: 'text'; text: string }
+  /** 图片附件：data 为 base64（不含 data: 前缀），mime 形如 image/png。 */
+  | { type: 'image'; mime: string; data: string; name?: string }
   | { type: 'tool-call'; id: string; name: string; arguments: string }
   | { type: 'tool-result'; callId: string; isError: boolean; content: string }
 >
@@ -41,6 +43,8 @@ export interface ToolResultMessage {
   callId: string
   content: string
   isError: boolean
+  /** 工具返回的图片（如 read 读图）：data 为 base64，不含 data: 前缀。 */
+  images?: Array<{ mime: string; data: string; name?: string }>
 }
 
 export interface ToolSchema {
@@ -91,11 +95,14 @@ export type ModelBlock =
  * The adapter-output stream protocol, matching dsh-llm's StreamChunk. Every
  * block opens with `block-start` and closes with `block-end` carrying the
  * complete block; `usage` precedes `finish`, which is always the final chunk.
+ * `thinking-delta` carries reasoning-model CoT text and is not assembled into
+ * ModelBlock (history/wire ignore it; surfaces may display it).
  * @mode raw stream
  */
 export type StreamChunk =
   | { type: 'block-start'; index: number; blockType: 'text' | 'tool-call' }
   | { type: 'text-delta'; index: number; text: string }
+  | { type: 'thinking-delta'; text: string }
   | { type: 'tool-call-delta'; index: number; id: string; name: string; argumentsDelta: string }
   | { type: 'block-end'; index: number; block: ModelBlock }
   | { type: 'usage'; usage: TokenUsage }
@@ -223,18 +230,39 @@ export interface AgentHandle {
 /** A live session: durable log plus registry identity. */
 export interface Session {
   readonly id: SessionId
-  readonly header: { cwd?: string }
+  /**
+   * Session header meta. `ephemeral` marks worker/subagent sessions: the
+   * persistence service skips them, so they never reach disk (per-run
+   * one-shot workers leave no JSONL artifacts).
+   */
+  readonly header: { cwd?: string; ephemeral?: boolean }
   readonly events: SessionEvent[]
   append<T extends SessionEventType>(type: T, data: SessionEventMap[T]): SessionEvent
   deriveMessages(): ModelMessage[]
 }
 
-/** Create a user message with a stable identity. */
-export function createUserMessage(text: string, source: UserMessage['source'] = { kind: 'human' }): UserMessage {
+/** Create a user message with a stable identity. Optional images attach as image blocks. */
+export function createUserMessage(
+  text: string,
+  source: UserMessage['source'] = { kind: 'human' },
+  images?: ReadonlyArray<{ mime: string; data: string; name?: string }>,
+): UserMessage {
+  const content: MessageContent = []
+  if (images) {
+    for (const img of images) {
+      content.push({
+        type: 'image',
+        mime: img.mime,
+        data: img.data,
+        ...(img.name !== undefined ? { name: img.name } : {}),
+      })
+    }
+  }
+  content.push({ type: 'text', text })
   return {
     id: randomUUID(),
     role: 'user',
-    content: [{ type: 'text', text }],
+    content,
     source,
   }
 }
@@ -254,17 +282,21 @@ export interface AssembleContext {
   model?: string
 }
 
-/** One contributed system-prompt section (registry input). */
+/** One contributed system-prompt section (registry input; DSH-shaped). */
 export interface PromptSection {
   readonly name: string
   readonly order: number
   readonly text: string | ((context: AssembleContext) => string)
+  /** Treat this contribution as the complete system prompt (DSH `complete`). */
+  readonly complete?: boolean
 }
 
 /** One section of an assembly, with its text resolved. */
 export interface AssembledSection {
   name: string
   text: string
+  /** Original registry order; kept so assemble waterfall can re-sort after inject. */
+  order?: number
 }
 
 /** The merge-extensible assembled model input from @cos/system-prompt. */

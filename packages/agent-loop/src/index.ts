@@ -447,7 +447,10 @@ export class LoopAgent implements Agent {
       }
       this.session.append('assistant/message', { turn, step, message })
       const toolCalls = message.content.filter((block) => block.type === 'tool-call')
-      if (toolCalls.length === 0) return { kind: 'completed' }
+      if (toolCalls.length === 0) {
+        // max-tokens 必须上抛：半截回复不能当成正常 completed。
+        return finish?.kind === 'max-tokens' ? { kind: 'max-tokens' } : { kind: 'completed' }
+      }
       if (finish?.kind === 'stop') {
         // The adapter signaled completion without tool execution (e.g. a tool
         // call emitted but the model said stop); still run the requested tools.
@@ -462,7 +465,12 @@ export class LoopAgent implements Agent {
           turn,
           step,
           callId: call.id,
-          message: { callId: call.id, content: result.content, isError: result.isError === true },
+          message: {
+            callId: call.id,
+            content: result.content,
+            isError: result.isError === true,
+            ...(result.images !== undefined && result.images.length > 0 ? { images: result.images } : {}),
+          },
         })
       }
       // The tool results join history, then the model is asked again in a new step.
@@ -497,7 +505,7 @@ export class AgentLoop extends Service {
   async createAgent(options: {
     sessionId?: SessionId
     agentOptions?: AgentOptions
-    meta?: { cwd?: string }
+    meta?: { cwd?: string; ephemeral?: boolean }
     resume?: boolean
   } = {}): Promise<AgentHandle> {
     const id = options.sessionId ?? brandSessionId(randomUUID())

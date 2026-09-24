@@ -1,0 +1,16 @@
+{
+  "name": "@deepseek-ai/dsh-system-prompt",
+  "version": "0.1.2-rc.1",
+  "description": "DSH-compatible system-prompt types backed by @cos/types + @cos/system-prompt.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@cos/system-prompt": "workspace:*",
+    "@cos/types": "workspace:*"
+  }
+}

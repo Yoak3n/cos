@@ -1,0 +1,25 @@
+{
+  "name": "@cos/plugin-api",
+  "private": true,
+  "type": "module",
+  "description": "Third-party plugin type surface: shared vocabulary plus Cordis Context service-key declarations. Runtime cores still resolve via loader pluginPaths (@cos/*).",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@cos/agent-loop": "workspace:*",
+    "@cos/agents": "workspace:*",
+    "@cos/credentials": "workspace:*",
+    "@cos/llm": "workspace:*",
+    "@cos/persistence": "workspace:*",
+    "@cos/session": "workspace:*",
+    "@cos/subagents": "workspace:*",
+    "@cos/system-prompt": "workspace:*",
+    "@cos/tools": "workspace:*",
+    "@cos/types": "workspace:*",
+    "@deepseek-ai/dsh-tools": "workspace:*",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "cordis": "4.0.0-rc.7"
+  }
+}

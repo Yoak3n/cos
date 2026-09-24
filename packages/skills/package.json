@@ -1,0 +1,12 @@
+{
+  "name": "@cos/skills",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "cordis": "4.0.0-rc.7"
+  }
+}
