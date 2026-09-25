@@ -42,6 +42,7 @@ import {
   resolveCosHome,
   resolveProfileDir,
 } from '@cos/profile'
+import { installErrorGuard } from './error-guard'
 
 export interface BootOptions {
   /** Base composition file (absolute path to a cordis.yml). */
@@ -58,6 +59,17 @@ export interface BootOptions {
   extraPatches?: readonly PatchOptions[]
   /** Services the launcher requires after settle (fail-loud). */
   required?: readonly string[]
+  /**
+   * 核心插件清单（包名或目录名）：其未捕获错误立即 panic。其余插件的
+   * 未捕获错误走隔离 + 滑窗熔断（决策 6，见 error-guard.ts）；默认空
+   * （DEFAULT_CORE_PLUGINS）——由产品在自己的 boot 层注入。
+   */
+  corePlugins?: readonly string[]
+  /**
+   * 插件 npm scope（如 `@acme`）：错误归属时把裸目录名限定为包名。
+   * 默认 `''`——引擎不认识任何产品的 scope。
+   */
+  pluginScope?: string
   /** HMR module watch roots; pass [] to disable module watching. */
   watchRoots?: readonly string[]
   /**
@@ -440,6 +452,8 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     extraPatches = [],
     watchRoots = ['.'],
     required = [],
+    corePlugins,
+    pluginScope,
     plugins,
     pluginPaths,
     pluginRoot,
@@ -642,6 +656,12 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     await ctx.fiber.dispose()
     throw new Error(`boot: services unavailable: ${missing.join(', ')} (check the mounted cordis.yml rows)`)
   }
+  // 决策 6：boot 后未捕获错误分级兜底——非核心插件隔离+熔断，引擎/核心插件 panic。
+  installErrorGuard({
+    ctx,
+    ...(corePlugins === undefined ? {} : { corePlugins }),
+    ...(pluginScope === undefined ? {} : { pluginScope }),
+  })
   return ctx
 }
 
