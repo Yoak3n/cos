@@ -1,6 +1,6 @@
 /**
  * @cos/llm-deepseek — DeepSeek adapter registering into the @cos/llm registry:
- * serves provider "deepseek-official" with models deepseek-v4-flash / -pro.
+ * serves provider "deepseek-official" with models deepseek-flash / -pro.
  * Translates the loop's history into the OpenAI-compatible chat-completions
  * streaming API and SSE deltas back into the block-protocol StreamChunk.
  * The API key resolves through the @cos/credentials seam when the adapter is
@@ -126,8 +126,8 @@ class DeepSeekLlmAdapter extends LlmAdapter {
   constructor(credentials: Context['credentials'], config: DeepSeekConfig) {
     super()
     this.baseUrl = (config.baseUrl ?? 'https://api.deepseek.com').replace(/\/+$/, '')
-    this.models = config.models ?? ['deepseek-v4-flash', 'deepseek-v4-pro']
-    this.defaultModel = config.defaultModel ?? 'deepseek-v4-flash'
+    this.models = config.models ?? ['deepseek-flash', 'deepseek-pro']
+    this.defaultModel = config.defaultModel ?? 'deepseek-flash'
     this.apiKeyRef = config.apiKeyKey ?? API_KEY_REF
     this.apiKeyEnv = config.apiKeyEnv ?? 'DEEPSEEK_API_KEY'
     // Credential resolution is deliberately NON-fail-loud at construction:
@@ -154,7 +154,7 @@ class DeepSeekLlmAdapter extends LlmAdapter {
     return {
       provider,
       name: 'DeepSeek（官方）',
-      description: 'DeepSeek 官方 API（deepseek-v4-flash / deepseek-v4-pro）。',
+      description: 'DeepSeek 官方 API（deepseek-flash / deepseek-pro）。',
       fields: [
         {
           key: 'apiKey',

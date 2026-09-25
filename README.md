@@ -90,7 +90,7 @@ sidecar.dispose()
 
 ## 模型：真实 DeepSeek（默认）vs mock
 
-默认 `cordis.yml` 挂载 **DeepSeek**（provider `deepseek-official`，模型 `deepseek-v4-flash`）。配好 `secrets.yml` 即可直接用。
+默认 `cordis.yml` 挂载 **DeepSeek**（provider `deepseek-official`，模型 `deepseek-flash`）。配好 `secrets.yml` 即可直接用。
 
 离线/无密钥调试用 mock：
 
