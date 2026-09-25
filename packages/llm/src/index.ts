@@ -90,7 +90,7 @@ export abstract class LlmAdapter {
 
   /**
    * Read a provider-scoped runtime setting (e.g. `baseUrl`) from the cos home
-   * settings file (`$COS_HOME/cos-settings.json`, key `<provider>.<key>`).
+   * settings file (`$COS_HOME/diver-settings.json`, key `<provider>.<key>`).
    *
    * The shell/backend writes these via the settings UI (`store: 'settings'`
    * fields); adapters should prefer this at call time over a construction-time
@@ -102,7 +102,7 @@ export abstract class LlmAdapter {
     const home = process.env.COS_HOME ?? ''
     if (home === '') return undefined
     try {
-      const content = readFileSync(join(home, 'cos-settings.json'), 'utf8')
+      const content = readFileSync(join(home, 'diver-settings.json'), 'utf8')
       const settings = JSON.parse(content) as Record<string, unknown>
       const value = settings[`${provider}.${key}`]
       return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
