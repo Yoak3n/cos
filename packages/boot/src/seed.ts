@@ -11,7 +11,7 @@
  * @module @cos/boot/seed
  */
 import {
-  cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
+  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import {
@@ -68,6 +68,27 @@ export interface ApplySeedResult {
 const linkType = process.platform === 'win32' ? 'junction' : 'dir'
 
 /**
+ * 建立目录链接（junction）：已有可用实体（含用户真实目录）不动；**悬空链接先清再建**
+ * （卸载后重装到不同路径、用户删过插件目录等场景会留下悬空）；目标缺失不建。
+ * 返回是否新建。
+ */
+function ensureLink(target: string, linkPath: string): boolean {
+  try {
+    lstatSync(linkPath)
+    try {
+      statSync(linkPath) // 悬空链接：lstat 成功而 stat 抛
+      return false
+    } catch {
+      rmSync(linkPath, { force: true })
+    }
+  } catch { /* 不存在 → 直接建 */ }
+  if (!existsSync(target)) return false
+  mkdirSync(dirname(linkPath), { recursive: true })
+  symlinkSync(resolve(target), linkPath, linkType)
+  return true
+}
+
+/**
  * 解析链（B′ 用户工作区自洽的关键）：
  * 1. `<工作区父>/node_modules` → 内置依赖目录（sidecar/node_modules：@cos 映射、
  *    cordis/yaml/vendor、tsx/esbuild）——工作区脱离安装树后 walk-up 不再自然命中；
@@ -78,10 +99,7 @@ const linkType = process.platform === 'win32' ? 'junction' : 'dir'
 export function linkWorkspaceDeps(pluginRoot: string, nodeModulesBase: string): string[] {
   const created: string[] = []
   const baseLink = join(dirname(pluginRoot), 'node_modules')
-  if (!existsSync(baseLink) && existsSync(nodeModulesBase)) {
-    symlinkSync(resolve(nodeModulesBase), baseLink, linkType)
-    created.push(baseLink)
-  }
+  if (ensureLink(nodeModulesBase, baseLink)) created.push(baseLink)
   for (const dir of readdirSync(pluginRoot, { withFileTypes: true })) {
     if (!dir.isDirectory() || dir.name.startsWith('.') || dir.name === 'node_modules') continue
     const pjPath = join(pluginRoot, dir.name, 'package.json')
@@ -95,10 +113,7 @@ export function linkWorkspaceDeps(pluginRoot: string, nodeModulesBase: string): 
     if (typeof name !== 'string' || !name.startsWith('@diver/')) continue
     const linkDir = join(pluginRoot, 'node_modules', '@diver')
     const linkPath = join(linkDir, name.slice('@diver/'.length))
-    if (existsSync(linkPath)) continue
-    mkdirSync(linkDir, { recursive: true })
-    symlinkSync(resolve(pluginRoot, dir.name), linkPath, linkType)
-    created.push(linkPath)
+    if (ensureLink(join(pluginRoot, dir.name), linkPath)) created.push(linkPath)
   }
   return created
 }

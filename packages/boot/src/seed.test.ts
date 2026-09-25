@@ -4,7 +4,8 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -168,6 +169,29 @@ test('linkWorkspaceDeps：工作区解析链 junction（用户副本可被 @dive
   // 4) 幂等：重复播种不炸、不重复创建
   const again = linkWorkspaceDeps(work, nmBase)
   assert.deepEqual(again, [])
+  // 5) 悬空基座链接重建（卸载后重装到不同路径：旧 junction 指向已消失的安装目录）
+  const nmBase2 = join(root, 'sidecar-b', 'node_modules')
+  mkdirSync(nmBase2, { recursive: true })
+  writeFileSync(join(nmBase2, 'fake-dep-b.js'), '// vendor B')
+  rmSync(nmBase, { recursive: true, force: true }) // 旧安装目录消失 → cos/node_modules 悬空
+  const rebuilt = linkWorkspaceDeps(work, nmBase2)
+  assert.ok(rebuilt.includes(join(root, 'cos', 'node_modules')), '悬空基座链接应被重建')
+  // 注：同一进程内 junction 换目标后有路径级 realpath 缓存（tsx/Node），
+  // 解析验证一律走新子进程——与生产语义一致（每次启动都是新进程、先建链后解析）
+  const resolveFresh = (parent: string, spec: string): string =>
+    execFileSync(process.execPath, [
+      '-e',
+      `process.stdout.write(require('node:module').createRequire(${JSON.stringify(parent)}).resolve(${JSON.stringify(spec)}))`,
+    ], { encoding: 'utf8' })
+  assert.equal(resolveFresh(join(work, 'memory', 'src', 'index.ts'), 'fake-dep-b'), join(nmBase2, 'fake-dep-b.js'))
+  // 6) @diver 链接目标被删后重建（同路径重播种）自动愈合，解析恢复
+  rmSync(join(work, 'native-bridge'), { recursive: true, force: true })
+  mkdirSync(join(work, 'native-bridge'), { recursive: true })
+  writeFileSync(join(work, 'native-bridge', 'index.ts'), 'nb2')
+  writeFileSync(join(work, 'native-bridge', 'package.json'), '{"name":"@diver/native-bridge","type":"module","main":"index.ts"}')
+  linkWorkspaceDeps(work, nmBase2)
+  assert.equal(realpathSync(join(work, 'node_modules', '@diver', 'native-bridge')), realpathSync(join(work, 'native-bridge')))
+  assert.equal(resolveFresh(join(work, 'memory', 'src', 'index.ts'), '@diver/native-bridge'), join(work, 'native-bridge', 'index.ts'))
 })
 
 test('hashTree：忽略 node_modules / 点目录 / tsbuildinfo', () => {
