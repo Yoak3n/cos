@@ -43,6 +43,7 @@ import {
   resolveProfileDir,
 } from '@cos/profile'
 import { installErrorGuard } from './error-guard'
+import { seedIfNeeded } from './seed'
 
 export interface BootOptions {
   /** Base composition file (absolute path to a cordis.yml). */
@@ -65,6 +66,13 @@ export interface BootOptions {
    * DEFAULT_CORE_PLUGINS（@diver/backend、@diver/native-bridge）。
    */
   corePlugins?: readonly string[]
+  /**
+   * 出厂种子镜像目录（安装目录 `plugins.seed/`）。存在时 boot 先把种子
+   * 对账到 `pluginRoot` 用户工作区（B′：fresh 播种 / update 静默更新 /
+   * conflict 保留用户版 + `.incoming`），版本标记相同零开销跳过。
+   * dev 布局不传即可。
+   */
+  seedDir?: string
   /** HMR module watch roots; pass [] to disable module watching. */
   watchRoots?: readonly string[]
   /**
@@ -448,6 +456,7 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     watchRoots = ['.'],
     required = [],
     corePlugins,
+    seedDir,
     plugins,
     pluginPaths,
     pluginRoot,
@@ -461,6 +470,13 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     process.loadEnvFile()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  // B′ 播种对账：版本标记变了才对账（平时启动零开销）；失败不阻断 boot，
+  // 交给 loader 的缺失行 fail-loud 兜底。
+  try {
+    seedIfNeeded(seedDir, pluginRoot)
+  } catch (error) {
+    console.error(`[cos][seed] 播种对账失败（继续启动，插件可能不全）：${String(error)}`)
   }
 
   // ── DSH-aligned profile mode ─────────────────────────────────────────────
