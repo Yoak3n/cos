@@ -31,7 +31,7 @@
   name: '@cos/llm-deepseek'
   config:
     baseUrl: https://api.deepseek.com
-    defaultModel: deepseek-v4-flash
+    defaultModel: deepseek-flash
 # Mock adapter — optional test provider for offline / no-key runs. The registry
 # holds both providers and the agent's route selects which serves; the real
 # DeepSeek row above is the default. To use the mock, disable this DeepSeek row
