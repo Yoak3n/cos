@@ -43,6 +43,7 @@ import {
   resolveProfileDir,
 } from '@cos/profile'
 import { installErrorGuard } from './error-guard'
+import { seedIfNeeded } from './seed'
 
 export interface BootOptions {
   /** Base composition file (absolute path to a cordis.yml). */
@@ -66,10 +67,18 @@ export interface BootOptions {
    */
   corePlugins?: readonly string[]
   /**
-   * 插件 npm scope（如 `@acme`）：错误归属时把裸目录名限定为包名。
-   * 默认 `''`——引擎不认识任何产品的 scope。
+   * 插件 npm scope（如 `@acme`）：播种时按它建立用户工作区解析链
+   * （`node_modules/<scope>/<slug>` → `<slug>`），错误归属时把裸目录名
+   * 限定为包名。默认 `''`——引擎不认识任何产品的 scope。
    */
   pluginScope?: string
+  /**
+   * 出厂种子镜像目录（安装目录 `plugins.seed/`）。存在时 boot 先把种子
+   * 对账到 `pluginRoot` 用户工作区（B′：fresh 播种 / update 静默更新 /
+   * conflict 保留用户版 + `.incoming`），版本标记相同零开销跳过。
+   * dev 布局不传即可。
+   */
+  seedDir?: string
   /** HMR module watch roots; pass [] to disable module watching. */
   watchRoots?: readonly string[]
   /**
@@ -454,6 +463,7 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     required = [],
     corePlugins,
     pluginScope,
+    seedDir,
     plugins,
     pluginPaths,
     pluginRoot,
@@ -467,6 +477,13 @@ export async function boot(options: BootOptions): Promise<ContextType> {
     process.loadEnvFile()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  // B′ 播种对账：版本标记变了才对账（平时启动零开销）；失败不阻断 boot，
+  // 交给 loader 的缺失行 fail-loud 兜底。
+  try {
+    seedIfNeeded(seedDir, pluginRoot, pluginScope)
+  } catch (error) {
+    console.error(`[cos][seed] 播种对账失败（继续启动，插件可能不全）：${String(error)}`)
   }
 
   // ── DSH-aligned profile mode ─────────────────────────────────────────────
