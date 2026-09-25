@@ -7,7 +7,8 @@
     "start": "tsx --expose-internals main.ts",
     "typecheck": "tsc --noEmit",
     "build:sea": "node scripts/build-sea.mjs",
-    "scaffold": "tsx scripts/scaffold.ts"
+    "scaffold": "tsx scripts/scaffold.ts",
+    "test": "node --import tsx --test packages/boot/src/error-guard.test.ts"
   },
   "dependencies": {
     "@cordisjs/plugin-hmr": "^1.0.15",
