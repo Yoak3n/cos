@@ -175,6 +175,9 @@ export class StandardWriter {
             role: 'user',
             content,
             timestamp: event.time,
+            // 来源标记（human / plugin 注入等）随行持久化：丢弃会让 resume 后
+            // 一切注入消息塌缩成 human（来源渲染 / UI 折叠全部失效）。
+            ...(data.source !== undefined ? { source: data.source } : {}),
           },
         }
         this.lastId = line.id
@@ -311,7 +314,11 @@ export class StandardReader {
           id: line.id,
           role: 'user',
           content: content.length > 0 ? content : [{ type: 'text', text }],
-          source: { kind: 'human' },
+          // 还原来源标记；旧标准行无 source 字段时回退 human。
+          source:
+            (message as { source?: SessionEventMap['user/message']['source'] }).source ?? {
+              kind: 'human',
+            },
         },
       } as unknown as SessionEvent)
       return
