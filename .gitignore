@@ -4,6 +4,5 @@ secrets.yml
 node_modules/
 main.js
 dist/
-.cos-home/
-.cos-home-smoke/
 *.bundle.mjs
+.cos-home*/
