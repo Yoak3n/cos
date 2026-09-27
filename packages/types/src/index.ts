@@ -127,7 +127,13 @@ export type SessionEvent = {
   [Type in SessionEventType]: { type: Type; seq: number; time: number; data: SessionEventMap[Type] }
 }[SessionEventType]
 
-/** The merge-extensible, append-only source of truth for one interaction. */
+/**
+ * The merge-extensible, append-only source of truth for one interaction.
+ *
+ * Engine-generic events only: a product extends this map from its own layer
+ * (`declare module '@cos/types' { interface SessionEventMap { … } }`) instead of
+ * adding product events here — the engine never names a product's concepts.
+ */
 export interface SessionEventMap {
   /** Opens turn `turn` before the loop claims queued input or runs pre-step. */
   'turn/start': { turn: number }
@@ -246,6 +252,8 @@ export function createUserMessage(
   text: string,
   source: UserMessage['source'] = { kind: 'human' },
   images?: ReadonlyArray<{ mime: string; data: string; name?: string }>,
+  /** 显式消息 id（群广播 fan-out 共享同一 id，接收端按 id 去重）；缺省随机。 */
+  id?: string,
 ): UserMessage {
   const content: MessageContent = []
   if (images) {
@@ -260,7 +268,7 @@ export function createUserMessage(
   }
   content.push({ type: 'text', text })
   return {
-    id: randomUUID(),
+    id: id ?? randomUUID(),
     role: 'user',
     content,
     source,
