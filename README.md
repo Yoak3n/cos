@@ -158,4 +158,11 @@ pnpm run scaffold    # 新插件骨架
 - 独立于 DeepSeek Harness 的再造/教学实现；概念对齐 DSH，实现不 fork 上游。
 - DSH 兼容包集中在 `packages/dsh/`，npm 包名仍为 `@deepseek-ai/dsh-*`，社区插件 import 不变。
 - 被 [diver](https://github.com/Yoak3n/diver) 以 submodule 方式挂在 `harness/`；产品层插件（`@diver/*`）不进本仓库。
+  **分层铁律**：引擎里不得出现任何产品概念——产品插件名、npm scope、产品事件类型、
+  产品落盘 role 一律不进 `packages/`。跨层只允许两条路：**通用扩展点**或**启动注入**：
+  - 产品事件类型：产品侧 `declare module '@cos/types'` 合并 `SessionEventMap`，不往引擎 map 里内联；
+  - 核心插件清单：`BootOptions.corePlugins`（引擎默认空）；
+  - 插件 scope：`BootOptions.pluginScope`（引擎默认 `''`，不认任何 scope）；
+  - 产品自己的记录（如群发言落账）放**产品自己的存储**，不塞进引擎的会话日志与 codec。
+  自查：在 `harness/` 下 `rg -n '@diver|group/sent' packages/` 必须无命中（README 与测试夹具除外）。
 - 请勿提交真实密钥（`secrets.yml` / `sessions/` / `.cos-home/` 均已 gitignore）。
