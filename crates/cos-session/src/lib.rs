@@ -4,17 +4,23 @@
 //! 事件为封闭枚举 + `Custom` 逃生舱（决策 D4）；`seq` 单调连续（含原始 chunk），
 //! 持久化可逐字节存回（JSONL 一行一事件）。
 //!
+//! 树状会话：分支归属是**事件上的事实**（`SessionEvent.branch` + `branch/open` /
+//! `branch/close`），会话树只是投影（见 [`BranchNode`]）。`derive_messages` 按当前
+//! 写入游标投影——于是 agent-loop 无需感知分支。
+//!
 //! 语义权威参考：`packages/core/session/src/types.ts`。
 //! P3 范围：surface 投影（user/message、assistant/message、tool/result、Custom 透传）；
 //! compaction/surface-op/seed 等高级机制留待后续阶段。
 
 #![warn(missing_docs)]
 
+mod derive;
 mod error;
 mod jsonl;
 mod session;
 mod types;
 
+pub use derive::{BranchNode, branch_tree, derive_messages};
 pub use error::SessionError;
 pub use jsonl::{load_jsonl, save_jsonl};
 pub use session::Session;

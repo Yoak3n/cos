@@ -85,6 +85,7 @@ async fn base_agent(
     registry.set_factory(Arc::new(LoopFactory)).unwrap();
     let agent = registry
         .create(CreateAgentOptions {
+            session: None,
             session_id: session_id.into(),
             options: AgentOptions {
                 provider: Some("mock".into()),
@@ -251,6 +252,7 @@ async fn cancel_during_tool_execution_stops_before_next_tool() {
     ));
     let agent = registry
         .create(CreateAgentOptions {
+            session: None,
             session_id: "sess-cancel-tool".into(),
             options: AgentOptions {
                 provider: Some("mock".into()),

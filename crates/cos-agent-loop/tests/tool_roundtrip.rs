@@ -115,6 +115,7 @@ async fn tool_call_executes_and_results_flow_back() {
 
     let agent = registry
         .create(CreateAgentOptions {
+            session: None,
             session_id: "sess-tools".into(),
             options: AgentOptions {
                 provider: Some("mock".into()),

@@ -30,6 +30,7 @@ async fn thinking_chunks_are_assembled_into_separate_blocks() {
     ));
     let agent = registry
         .create(CreateAgentOptions {
+            session: None,
             session_id: "thinking".into(),
             options: AgentOptions {
                 provider: Some("mock".into()),

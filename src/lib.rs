@@ -237,6 +237,7 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
             root.get::<AgentRegistry>()
                 .expect("刚装配")
                 .create(CreateAgentOptions {
+                    session: None,
                     session_id: config.session_id.clone(),
                     options: AgentOptions {
                         provider,

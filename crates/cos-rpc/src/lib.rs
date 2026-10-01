@@ -927,6 +927,7 @@ mod tests {
         ));
         registry
             .create(CreateAgentOptions {
+                session: None,
                 session_id: "rpc-lib".into(),
                 options: AgentOptions {
                     provider: Some("mock".into()),

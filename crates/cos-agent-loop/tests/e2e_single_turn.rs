@@ -40,6 +40,7 @@ fn mock_adapter() -> Arc<dyn LlmAdapter> {
 
 fn make_options(session_id: &str, adapter: Arc<dyn LlmAdapter>) -> CreateAgentOptions {
     CreateAgentOptions {
+        session: None,
         session_id: session_id.to_string(),
         options: AgentOptions {
             provider: Some("mock".into()),

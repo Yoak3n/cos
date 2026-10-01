@@ -221,6 +221,37 @@ pub enum SessionEventData {
         /// 整表快照。
         todos: Vec<TodoItem>,
     },
+    /// 开支线：从父分支的某一点分叉出一条独立对话线（树状会话）。
+    ///
+    /// 「线性对话承载树状知识」的机制级解法：支线的对话**不回流**父分支，
+    /// 完结时以 [`SessionEventData::BranchClose`] 的摘要回流。
+    #[serde(rename = "branch/open")]
+    BranchOpen {
+        /// 分支 id（会话内唯一）。
+        #[serde(rename = "branchId")]
+        branch_id: String,
+        /// 父分支（主干为 `None`）。
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "parentBranch"
+        )]
+        parent_branch: Option<String>,
+        /// 分叉点：父分支中此 `seq` **之后**开岔（父分支视野含 `seq <= parent_seq`）。
+        #[serde(rename = "parentSeq")]
+        parent_seq: u64,
+        /// 分支标签（人读，如术语名）。
+        label: String,
+    },
+    /// 折叠支线：写摘要并关闭（摘要回流父分支视野，支线本身不再占上下文）。
+    #[serde(rename = "branch/close")]
+    BranchClose {
+        /// 分支 id。
+        #[serde(rename = "branchId")]
+        branch_id: String,
+        /// 折叠摘要。
+        summary: String,
+    },
     /// 请求头快照（log-only）。
     #[serde(rename = "request/header")]
     RequestHeader {
@@ -250,6 +281,12 @@ pub struct SessionEvent {
     pub seq: u64,
     /// Unix epoch 毫秒时间戳。
     pub time: u64,
+    /// 所属分支（主干为 `None` = 根分支）。
+    ///
+    /// 树状会话的**结构指针进事件**：分支归属是事实，会话树只是它的投影。
+    /// 旧日志没有这个字段，`serde(default)` 读作主干。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// 事件数据（flatten：`type` / `data` 在信封顶层）。
     #[serde(flatten)]
     pub data: SessionEventData,
@@ -269,6 +306,8 @@ impl SessionEventData {
             SessionEventData::ToolCall { .. } => "tool/call",
             SessionEventData::ToolResult { .. } => "tool/result",
             SessionEventData::TodoWrite { .. } => "todo/write",
+            SessionEventData::BranchOpen { .. } => "branch/open",
+            SessionEventData::BranchClose { .. } => "branch/close",
             SessionEventData::RequestHeader { .. } => "request/header",
             SessionEventData::RequestContext { .. } => "request/context",
             SessionEventData::Custom { .. } => "custom",

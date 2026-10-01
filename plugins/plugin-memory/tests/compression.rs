@@ -136,6 +136,7 @@ async fn long_session_compresses_tail_and_runs_digest() {
         .get::<AgentRegistry>()
         .unwrap()
         .create(CreateAgentOptions {
+            session: None,
             session_id: "m3-agent".into(),
             options: AgentOptions {
                 provider: Some("capture".into()),

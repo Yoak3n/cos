@@ -40,6 +40,7 @@ async fn request_error_closes_step_and_turn() {
         .get::<AgentRegistry>()
         .unwrap()
         .create(CreateAgentOptions {
+            session: None,
             session_id: "err-agent".into(),
             options: AgentOptions {
                 provider: None,

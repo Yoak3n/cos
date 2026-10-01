@@ -769,7 +769,10 @@ impl AgentFactory for LoopFactory {
             let core = Arc::new(AgentCore {
                 id: options.session_id.clone(),
                 options: options.options.clone(),
-                session: Session::new(options.session_id.clone()),
+                session: options
+                    .session
+                    .clone()
+                    .unwrap_or_else(|| Session::new(options.session_id.clone())),
                 inbox: Inbox::new(),
                 agent_ctx,
                 root,

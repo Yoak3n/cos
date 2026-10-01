@@ -125,6 +125,7 @@ async fn main() -> Result<(), cos::AppError> {
         .get::<AgentRegistry>()
         .expect("刚装配")
         .create(CreateAgentOptions {
+            session: None,
             session_id: "embed-demo".into(),
             options: AgentOptions::default(),
             adapter,

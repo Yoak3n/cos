@@ -76,6 +76,7 @@ async fn turn_absorbed_then_recalled_and_injected() {
         .get::<AgentRegistry>()
         .unwrap()
         .create(CreateAgentOptions {
+            session: None,
             session_id: "m2-agent".into(),
             options: AgentOptions {
                 provider: Some("main".into()),

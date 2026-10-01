@@ -45,6 +45,7 @@ async fn cancel_message_removes_queued_followup() {
     ));
     let agent = registry
         .create(CreateAgentOptions {
+            session: None,
             session_id: "cancel-queue".into(),
             options: AgentOptions {
                 provider: Some("mock".into()),
@@ -90,6 +91,7 @@ async fn cancel_message_misses_consumed_and_unknown() {
     ));
     let agent = registry
         .create(CreateAgentOptions {
+            session: None,
             session_id: "cancel-miss".into(),
             options: AgentOptions {
                 provider: Some("mock".into()),

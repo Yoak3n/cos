@@ -68,6 +68,11 @@ pub type Maintenance = Box<dyn FnOnce(AbortSignal) -> BoxFuture<'static, ()> + S
 /// 注册表工厂的创建请求（dsh `CreateAgentOptions` 的 A 形态子集）。
 #[derive(Clone)]
 pub struct CreateAgentOptions {
+    /// 恢复用的既有会话（`None` = 新建空会话）。
+    ///
+    /// 传进来即可**从持久化日志续跑**：`Session::from_events(id, load_jsonl(path)?.1)`。
+    /// 会话内部状态（写入游标、分支归属）随之恢复，驱动器无需感知。
+    pub session: Option<Session>,
     /// 共享的 agent/session 身份。
     pub session_id: String,
     /// agent 选项（provider/model/…）。

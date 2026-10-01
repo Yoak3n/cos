@@ -2,18 +2,28 @@
 //!
 //! P4 起 `Session` 具备内部可变性（`Arc<Mutex<Inner>>`）：Agent 句柄对外共享
 //! `&Session` 只读视图，loop 驱动器以 `&self` 追加——写路径仍是单写者（loop）。
+//!
+//! 树状会话：`Session` 持有**写入游标** `current_branch`，`append` 给事件打分支标记。
+//! 于是 agent-loop 一行都不用改——它照旧调 `derive_messages()`，拿到的自然是
+//! 当前分支的上下文（见 [`crate::derive`]）。
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cos_llm::{Message, ToolResultMessage};
+use cos_llm::Message;
 
+use crate::derive::{self, BranchNode};
+use crate::error::SessionError;
 use crate::types::{SessionEvent, SessionEventData};
 
 /// 内部状态（锁保护）。
 struct Inner {
     events: Vec<SessionEvent>,
     next_seq: u64,
+    /// 当前写入分支（`None` = 主干）。
+    current_branch: Option<String>,
+    /// 下一个分支序号（生成 `br_N`）。
+    next_branch: u64,
 }
 
 /// 追加式会话日志（唯一事实源：模型可见 ⟺ 已记录）。
@@ -26,23 +36,27 @@ pub struct Session {
 }
 
 impl Session {
-    /// 新建空会话（seq 从 1 起）。
+    /// 新建空会话（seq 从 1 起，游标在主干）。
     pub fn new(id: impl Into<String>) -> Self {
+        Self::from_events(id, Vec::new())
+    }
+
+    /// 从既有事件恢复（重载/回放）；`next_seq = max(seq) + 1`，游标回到主干。
+    pub fn from_events(id: impl Into<String>, events: Vec<SessionEvent>) -> Self {
+        let next_seq = events.iter().map(|event| event.seq).max().unwrap_or(0) + 1;
+        let next_branch = events
+            .iter()
+            .filter(|event| matches!(event.data, SessionEventData::BranchOpen { .. }))
+            .count() as u64
+            + 1;
         Self {
             id: id.into(),
             inner: Arc::new(Mutex::new(Inner {
-                events: Vec::new(),
-                next_seq: 1,
+                events,
+                next_seq,
+                current_branch: None,
+                next_branch,
             })),
-        }
-    }
-
-    /// 从既有事件恢复（重载/回放）；`next_seq = max(seq) + 1`。
-    pub fn from_events(id: impl Into<String>, events: Vec<SessionEvent>) -> Self {
-        let next_seq = events.iter().map(|event| event.seq).max().unwrap_or(0) + 1;
-        Self {
-            id: id.into(),
-            inner: Arc::new(Mutex::new(Inner { events, next_seq })),
         }
     }
 
@@ -76,45 +90,145 @@ impl Session {
     /// 追加事件（显式时间戳，测试确定性用）；返回写入的事件。
     pub fn append_at(&self, data: SessionEventData, time_ms: u64) -> SessionEvent {
         let mut inner = self.inner.lock().unwrap();
-        let event = SessionEvent {
-            seq: inner.next_seq,
-            time: time_ms,
-            data,
-        };
-        inner.next_seq += 1;
-        inner.events.push(event.clone());
-        event
+        push_event(&mut inner, data, time_ms)
     }
 
-    /// 从日志投影模型可见历史（同 dsh `deriveMessages`）：
-    /// user/message、assistant/message、tool/result 按 seq 顺序进入 surface；
-    /// `Custom` 原样透传（决策 D4）；chunk / 边界 / 请求头不参与。
-    pub fn derive_messages(&self) -> Vec<Message> {
-        self.inner
-            .lock()
-            .unwrap()
-            .events
-            .iter()
-            .filter_map(|event| match &event.data {
-                SessionEventData::UserMessage(message) => Some(Message::User(message.clone())),
-                SessionEventData::AssistantMessage { message, .. } => {
-                    Some(Message::Assistant(message.clone()))
-                }
-                SessionEventData::ToolResult {
-                    message, call_id, ..
-                } => Some(Message::Tool(ToolResultMessage {
-                    content: message.content.clone(),
-                    // 配对调用 id 必须随历史回流（OpenAI 协议 tool 消息需要 tool_call_id）
-                    call_id: Some(call_id.clone()),
-                })),
-                SessionEventData::Custom { name, data } => Some(Message::Custom {
-                    name: name.clone(),
-                    data: data.clone(),
-                }),
-                _ => None,
-            })
-            .collect()
+    // ───────────────────────── 树状会话 ─────────────────────────
+
+    /// 当前写入分支（`None` = 主干）。
+    pub fn current_branch(&self) -> Option<String> {
+        self.inner.lock().unwrap().current_branch.clone()
     }
+
+    /// 从**当前分支**的 `parent_seq` 处开支线，并切进去；返回新分支 id。
+    ///
+    /// `parent_seq` 是「分岔点在父分支的哪个 seq 之后」——父分支视野含 `seq <= parent_seq`。
+    pub fn open_branch(
+        &self,
+        label: impl Into<String>,
+        parent_seq: u64,
+    ) -> Result<String, SessionError> {
+        let mut inner = self.inner.lock().unwrap();
+        let last = inner.next_seq.saturating_sub(1);
+        if parent_seq > last {
+            return Err(SessionError::Invalid(format!(
+                "分叉点 {parent_seq} 超出已记录范围（last_seq = {last}）"
+            )));
+        }
+        let id = format!("br_{}", inner.next_branch);
+        inner.next_branch += 1;
+        let parent = inner.current_branch.clone();
+        // 先切游标再写事件：BranchOpen 自身归属新分支（它是该分支的出生记录）
+        inner.current_branch = Some(id.clone());
+        push_event(
+            &mut inner,
+            SessionEventData::BranchOpen {
+                branch_id: id.clone(),
+                parent_branch: parent,
+                parent_seq,
+                label: label.into(),
+            },
+            now_ms(),
+        );
+        Ok(id)
+    }
+
+    /// 切换写入分支（`None` = 回主干）。
+    pub fn enter_branch(&self, branch: Option<&str>) -> Result<(), SessionError> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(id) = branch
+            && !branch_exists(&inner.events, id)
+        {
+            return Err(SessionError::Invalid(format!("分支不存在: {id}")));
+        }
+        inner.current_branch = branch.map(str::to_string);
+        Ok(())
+    }
+
+    /// 折叠**当前分支**（写摘要并关闭），游标交还父分支；返回被关闭的分支 id。
+    ///
+    /// 主干不能关闭（它就是会话本身）。
+    pub fn close_branch(&self, summary: impl Into<String>) -> Result<String, SessionError> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(id) = inner.current_branch.clone() else {
+            return Err(SessionError::Invalid("主干不能折叠".into()));
+        };
+        if is_closed(&inner.events, &id) {
+            return Err(SessionError::Invalid(format!("分支已折叠: {id}")));
+        }
+        let parent = parent_of(&inner.events, &id);
+        push_event(
+            &mut inner,
+            SessionEventData::BranchClose {
+                branch_id: id.clone(),
+                summary: summary.into(),
+            },
+            now_ms(),
+        );
+        inner.current_branch = parent;
+        Ok(id)
+    }
+
+    /// 指定分支的模型可见历史（**不改变游标**；审计与 UI 用）。
+    pub fn derive_branch_messages(&self, branch: Option<&str>) -> Vec<Message> {
+        let inner = self.inner.lock().unwrap();
+        derive::derive_messages(&inner.events, branch)
+    }
+
+    /// 会话树投影（主干为根）。
+    pub fn branch_tree(&self) -> BranchNode {
+        derive::branch_tree(&self.inner.lock().unwrap().events)
+    }
+
+    // ───────────────────────── 投影 ─────────────────────────
+
+    /// 从日志投影**当前分支**的模型可见历史（同 dsh `deriveMessages`）。
+    pub fn derive_messages(&self) -> Vec<Message> {
+        let inner = self.inner.lock().unwrap();
+        derive::derive_messages(&inner.events, inner.current_branch.as_deref())
+    }
+}
+
+/// 追加事件（调用方已持锁）；打上当前分支标记。
+fn push_event(inner: &mut Inner, data: SessionEventData, time_ms: u64) -> SessionEvent {
+    let event = SessionEvent {
+        seq: inner.next_seq,
+        time: time_ms,
+        branch: inner.current_branch.clone(),
+        data,
+    };
+    inner.next_seq += 1;
+    inner.events.push(event.clone());
+    event
+}
+
+/// 分支是否已开过。
+fn branch_exists(events: &[SessionEvent], id: &str) -> bool {
+    events.iter().any(|event| match &event.data {
+        SessionEventData::BranchOpen { branch_id, .. } => branch_id == id,
+        _ => false,
+    })
+}
+
+/// 分支是否已折叠。
+fn is_closed(events: &[SessionEvent], id: &str) -> bool {
+    events.iter().any(|event| match &event.data {
+        SessionEventData::BranchClose { branch_id, .. } => branch_id == id,
+        _ => false,
+    })
+}
+
+/// 分支的父分支（主干为 `None`）。
+fn parent_of(events: &[SessionEvent], id: &str) -> Option<String> {
+    events.iter().find_map(|event| match &event.data {
+        SessionEventData::BranchOpen {
+            branch_id,
+            parent_branch,
+            ..
+        } if branch_id == id => Some(parent_branch.clone()),
+        _ => None,
+    })
+    .flatten()
 }
 
 /// 当前 epoch 毫秒。
