@@ -120,6 +120,7 @@ async fn tool_call_executes_and_results_flow_back() {
                 provider: Some("mock".into()),
                 model: Some("m".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter,
         })

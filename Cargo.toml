@@ -64,6 +64,8 @@ plugin-memory = ["dep:plugin-memory"]
 plugin-opencode-provider = ["dep:plugin-opencode-provider"]
 plugin-rpc = ["dep:plugin-rpc"]
 plugin-todo = ["dep:plugin-todo"]
+# 库嵌入按需：内置协议适配器（openai / anthropic / responses；带 reqwest 网络栈）
+llm-adapters = ["cos-llm/adapters"]
 
 [workspace]
 members = ["crates/*", "plugins/*"]

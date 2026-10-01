@@ -41,6 +41,7 @@ pub use cos_loader as loader;
 pub use cos_memory as memory;
 pub use cos_session as session;
 pub use cos_shell as shell;
+pub use cos_system_prompt as system_prompt;
 pub use cos_tools as tools;
 
 use cos_invariants::{InvariantRegistry, register_defaults};
@@ -241,6 +242,7 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
                         provider,
                         model,
                         max_tokens: None,
+                        role: None,
                     },
                     adapter,
                 })

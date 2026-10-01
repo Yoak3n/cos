@@ -69,6 +69,7 @@ fn echo_run() -> ToolRun {
         arguments: json!({"text": "hi"}),
         turn: 1,
         step: 1,
+        caller: Default::default(),
     }
 }
 
@@ -159,6 +160,7 @@ async fn unknown_tool_is_error_outcome() {
         arguments: json!({}),
         turn: 1,
         step: 1,
+        caller: Default::default(),
     };
     let outcome = registry.execute(&root, &run).await;
     assert!(outcome.is_error);

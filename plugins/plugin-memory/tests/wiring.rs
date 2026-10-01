@@ -67,6 +67,7 @@ async fn apply_wires_memory_service_and_four_tools() {
         arguments: json!({ "query": "吉他" }),
         turn: 1,
         step: 1,
+        caller: Default::default(),
     };
     let outcome = registry.execute(&ctx, &run).await;
     assert!(!outcome.is_error);

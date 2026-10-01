@@ -141,6 +141,7 @@ async fn long_session_compresses_tail_and_runs_digest() {
                 provider: Some("capture".into()),
                 model: Some("mock".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter: capturing.clone(),
         })

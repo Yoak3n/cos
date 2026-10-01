@@ -35,6 +35,7 @@ async fn thinking_chunks_are_assembled_into_separate_blocks() {
                 provider: Some("mock".into()),
                 model: Some("mock".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter,
         })

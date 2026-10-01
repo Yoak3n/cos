@@ -50,6 +50,7 @@ async fn cancel_message_removes_queued_followup() {
                 provider: Some("mock".into()),
                 model: Some("mock".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter,
         })
@@ -94,6 +95,7 @@ async fn cancel_message_misses_consumed_and_unknown() {
                 provider: Some("mock".into()),
                 model: Some("mock".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter,
         })

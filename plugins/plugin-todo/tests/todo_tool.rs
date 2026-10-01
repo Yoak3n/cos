@@ -25,6 +25,7 @@ fn run(arguments: serde_json::Value) -> ToolRun {
         arguments,
         turn: 1,
         step: 1,
+        caller: Default::default(),
     }
 }
 

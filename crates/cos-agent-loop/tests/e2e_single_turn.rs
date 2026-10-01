@@ -45,6 +45,7 @@ fn make_options(session_id: &str, adapter: Arc<dyn LlmAdapter>) -> CreateAgentOp
             provider: Some("mock".into()),
             model: Some("mock-1".into()),
             max_tokens: None,
+            role: None,
         },
         adapter,
     }

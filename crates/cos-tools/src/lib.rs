@@ -17,6 +17,14 @@ use cos_session::ToolError;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
+/// 调用身份（**系统事实**：本次工具调用由哪个角色发起；工具层审计/门槛用，模型自称不算）。
+/// P7 冻结：serde 可序列化（B-ABI 跨边界载荷 = JSON）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolCaller {
+    /// 调用方角色标签（如 `"gen"` / `"trunk"` / `"branch"` / `"check"` / `"user"`）。
+    pub role: String,
+}
+
 /// 一次工具调用（参数已解析；空串 → `{}`，非法 JSON → 原串文本，同 dsh `parseArguments`）。
 /// P7 冻结：serde 可序列化（B-ABI 跨边界载荷 = JSON）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +39,9 @@ pub struct ToolRun {
     pub turn: u32,
     /// 所属 step。
     pub step: u32,
+    /// 调用身份（系统注入；旧载荷缺省 = 空身份）。
+    #[serde(default)]
+    pub caller: ToolCaller,
 }
 
 /// 一次工具调用的结果（模型可见内容 + 内部失败身份）。

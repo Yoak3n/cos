@@ -45,6 +45,7 @@ async fn request_error_closes_step_and_turn() {
                 provider: None,
                 model: None,
                 max_tokens: None,
+                role: None,
             },
             adapter: Arc::new(FailingAdapter),
         })

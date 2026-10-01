@@ -34,6 +34,8 @@ pub struct AgentOptions {
     pub model: Option<String>,
     /// 每次请求最大输出 token。
     pub max_tokens: Option<u32>,
+    /// 调用方角色标签（注入 `ToolRun.caller.role`，供工具层审计/门槛使用；如 `"trunk"`）。
+    pub role: Option<String>,
 }
 
 /// 取消信号（loop 驱动器传给维护任务等）。

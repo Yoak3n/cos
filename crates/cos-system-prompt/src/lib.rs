@@ -43,6 +43,11 @@ impl PromptSections {
         });
     }
 
+    /// 整体替换段列表（= 应用一套新的「段 + order」编排；顺序 = 切片顺序）。
+    pub fn replace(&self, sections: Vec<PromptSection>) {
+        *self.sections.lock().unwrap() = sections;
+    }
+
     /// 当前段快照。
     pub fn sections(&self) -> Vec<PromptSection> {
         self.sections.lock().unwrap().clone()

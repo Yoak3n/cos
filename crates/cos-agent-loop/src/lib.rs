@@ -528,6 +528,13 @@ impl AgentCore {
                 arguments: parse_arguments(&call.arguments),
                 turn,
                 step,
+                caller: cos_tools::ToolCaller {
+                    role: self
+                        .options
+                        .role
+                        .clone()
+                        .unwrap_or_else(|| "agent".to_string()),
+                },
             };
             let outcome = match &tool_registry {
                 Some(registry) => registry.execute(&self.agent_ctx, &run).await,

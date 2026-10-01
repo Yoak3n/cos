@@ -90,6 +90,7 @@ async fn base_agent(
                 provider: Some("mock".into()),
                 model: Some("mock".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter,
         })
@@ -255,6 +256,7 @@ async fn cancel_during_tool_execution_stops_before_next_tool() {
                 provider: Some("mock".into()),
                 model: Some("mock".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter,
         })

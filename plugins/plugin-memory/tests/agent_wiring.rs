@@ -81,6 +81,7 @@ async fn turn_absorbed_then_recalled_and_injected() {
                 provider: Some("main".into()),
                 model: Some("mock".into()),
                 max_tokens: None,
+                role: None,
             },
             adapter: Arc::new(MockAdapter::new(
                 "main",

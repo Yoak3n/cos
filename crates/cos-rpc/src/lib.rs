@@ -932,6 +932,7 @@ mod tests {
                     provider: Some("mock".into()),
                     model: Some("mock-1".into()),
                     max_tokens: None,
+                    role: None,
                 },
                 adapter,
             })
