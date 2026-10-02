@@ -10,11 +10,15 @@
 //! 这就是岔路物理隔离。支线完结时以摘要回流（见 [`SessionEventData::BranchClose`]）。
 
 use cos_llm::{Message, ToolResultMessage};
+use serde::{Deserialize, Serialize};
 
 use crate::types::{SessionEvent, SessionEventData};
 
 /// 会话树节点（**投影**，非事实源）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// 可序列化：这是给 UI / 审计用的读模型，跨进程传输是它的正常用途
+/// （字段命名随会话日志的逐字段 `rename` 约定，多词字段用 camelCase）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchNode {
     /// 分支 id（`None` = 主干/根分支）。
     pub id: Option<String>,
@@ -23,6 +27,7 @@ pub struct BranchNode {
     /// 父分支（主干为 `None`）。
     pub parent: Option<String>,
     /// 分叉点：父分支中此 `seq` 之后开岔（主干为 0）。
+    #[serde(rename = "forkSeq")]
     pub fork_seq: u64,
     /// 折叠摘要（未关闭为 `None`）。
     pub closed: Option<String>,
@@ -67,26 +72,34 @@ fn surface(event: &SessionEvent) -> Option<Message> {
     }
 }
 
-/// 某分支的模型可见历史；`branch` 为 `None` 即主干。
+/// 某分支视野内的事件（祖先链在分叉点之前的部分 + 本分支自身），按祖先到自身的顺序。
 ///
-/// 非分支会话（没有任何 `branch/open`）的结果与逐事件全量投影完全一致。
-pub fn derive_messages(events: &[SessionEvent], branch: Option<&str>) -> Vec<Message> {
+/// 这是 [`derive_messages`] 的**取样范围**，单独导出是为了让不变量与审计复用同一份
+/// 「可见」定义——树状会话下「已记录」必须理解为「本分支视野内的已记录」，
+/// 支线里的追问对主干不可见是设计，不是漏记。
+pub fn visible_events<'a>(
+    events: &'a [SessionEvent],
+    branch: Option<&str>,
+) -> Vec<&'a SessionEvent> {
     let mut out = Vec::new();
     for (id, upper) in ancestry(events, branch) {
         for event in events {
-            if event.branch != id {
-                continue;
-            }
-            // 祖先只看到分叉点为止：父分支在分岔之后的新内容不进支线视野
-            if event.seq > upper {
-                continue;
-            }
-            if let Some(message) = surface(event) {
-                out.push(message);
+            if event.branch == id && event.seq <= upper {
+                out.push(event);
             }
         }
     }
     out
+}
+
+/// 某分支的模型可见历史；`branch` 为 `None` 即主干。
+///
+/// 非分支会话（没有任何 `branch/open`）的结果与逐事件全量投影完全一致。
+pub fn derive_messages(events: &[SessionEvent], branch: Option<&str>) -> Vec<Message> {
+    visible_events(events, branch)
+        .into_iter()
+        .filter_map(surface)
+        .collect()
 }
 
 /// 祖先链（根 → 目标）及每段的可见上界 `seq`（含）。

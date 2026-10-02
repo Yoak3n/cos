@@ -20,7 +20,7 @@ mod jsonl;
 mod session;
 mod types;
 
-pub use derive::{BranchNode, branch_tree, derive_messages};
+pub use derive::{BranchNode, branch_tree, derive_messages, visible_events};
 pub use error::SessionError;
 pub use jsonl::{load_jsonl, save_jsonl};
 pub use session::Session;

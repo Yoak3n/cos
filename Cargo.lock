@@ -159,6 +159,7 @@ name = "cos-invariants"
 version = "0.1.0"
 dependencies = [
  "cos-core",
+ "cos-llm",
  "cos-session",
 ]
 

@@ -215,7 +215,11 @@ impl SessionInvariant for ModelVisibleIffLogged {
 
     fn check(&self, session: &Session) -> Vec<String> {
         let events = session.events();
-        let surface_seqs: Vec<u64> = events
+        // 树状会话下「已记录」= **本分支视野内**的已记录：支线里的追问对主干不可见是设计
+        // （岔路物理隔离），不是漏记。取样范围与 derive_messages 共用 visible_events 口径。
+        let branch = session.current_branch();
+        let visible = cos_session::visible_events(&events, branch.as_deref());
+        let surface_count = visible
             .iter()
             .filter(|event| {
                 matches!(
@@ -226,13 +230,11 @@ impl SessionInvariant for ModelVisibleIffLogged {
                         | SessionEventData::Custom { .. }
                 )
             })
-            .map(|event| event.seq)
-            .collect();
+            .count();
         let derived = session.derive_messages();
-        if surface_seqs.len() != derived.len() {
+        if surface_count != derived.len() {
             return vec![format!(
-                "surface 事件数 {} 与 derive_messages 数 {} 不一致",
-                surface_seqs.len(),
+                "视野内 surface 事件数 {surface_count} 与 derive_messages 数 {} 不一致（分支 {branch:?}）",
                 derived.len()
             )];
         }

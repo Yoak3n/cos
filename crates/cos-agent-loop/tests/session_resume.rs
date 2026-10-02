@@ -159,3 +159,45 @@ async fn agent_writes_into_the_restored_branch() {
     let has_trunk = view.iter().any(|m| matches!(m, cos_llm::Message::User(u) if u.content == "主干问"));
     assert!(has_trunk, "支线应看得到分叉点之前的祖先上下文");
 }
+
+/// turn 号是**会话级**编号：换一个 agent 实例续跑，turn 从日志续接而不是重新从 1 数。
+///
+/// 回归点：驱动器把 `last_turn` 存在自己身上（构造时为 0），于是「每次调用都新建 agent」
+/// 的用法（CLI 每次执行、进程重启、UI 重开）会把每一轮都写成 turn 1，
+/// 破坏 `turn 号连续` 不变量（`cos-invariants` 的 `turn-pairing`）。
+#[tokio::test]
+async fn turn_numbering_continues_across_agent_instances() {
+    let (_root, registry) = setup();
+    let first = registry
+        .create(options("turn-1", None, adapter(vec!["第一轮答"])))
+        .await
+        .unwrap();
+    first.followup(UserMessage::new("第一轮问"));
+    first.when_idle().await;
+    assert_eq!(first.session().last_turn(), 1, "首轮应为 turn 1");
+    let events = first.session().events();
+
+    let (_root2, registry2) = setup();
+    let resumed = registry2
+        .create(options(
+            "turn-1",
+            Some(Session::from_events("turn-1", events)),
+            adapter(vec!["第二轮答"]),
+        ))
+        .await
+        .unwrap();
+    resumed.followup(UserMessage::new("第二轮问"));
+    resumed.when_idle().await;
+
+    let turns: Vec<u32> = resumed
+        .session()
+        .events()
+        .iter()
+        .filter_map(|event| match &event.data {
+            SessionEventData::TurnStart { turn } => Some(*turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(turns, [1, 2], "turn 号必须跨实例连续");
+    assert_eq!(resumed.session().last_turn(), 2);
+}

@@ -766,18 +766,21 @@ impl AgentFactory for LoopFactory {
         Box::pin(async move {
             let agent_ctx =
                 root.fork_scoped(ScopeKey::new(format!("agent:{}", options.session_id)));
+            let session = options
+                .session
+                .clone()
+                .unwrap_or_else(|| Session::new(options.session_id.clone()));
+            // turn 号从会话日志续接：驱动器实例的生命周期不等于会话的生命周期。
+            let last_turn = session.last_turn();
             let core = Arc::new(AgentCore {
                 id: options.session_id.clone(),
                 options: options.options.clone(),
-                session: options
-                    .session
-                    .clone()
-                    .unwrap_or_else(|| Session::new(options.session_id.clone())),
+                session,
                 inbox: Inbox::new(),
                 agent_ctx,
                 root,
                 adapter: options.adapter.clone(),
-                phase: Arc::new(Mutex::new(Phase::Idle { last_turn: 0 })),
+                phase: Arc::new(Mutex::new(Phase::Idle { last_turn })),
                 gate: Arc::new(IdleGate::default()),
             });
             Ok(Arc::new(LoopAgent { core }) as Arc<dyn Agent>)

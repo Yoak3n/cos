@@ -82,6 +82,26 @@ impl Session {
         self.inner.lock().unwrap().next_seq.saturating_sub(1)
     }
 
+    /// 已记录的最大 turn 号（0 = 还没跑过 turn）。
+    ///
+    /// turn 号是**会话级**编号：驱动器换一个实例接着跑同一个会话时，必须从这里续接，
+    /// 否则新实例会从 1 重新数，破坏 `turn 号连续` 不变量（进程重启、CLI 每次调用、
+    /// UI 重开都属于这种情形）。
+    pub fn last_turn(&self) -> u32 {
+        self.inner
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .filter_map(|event| match &event.data {
+                SessionEventData::TurnStart { turn }
+                | SessionEventData::TurnEnd { turn, .. } => Some(*turn),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// 追加事件（时间戳取当前 epoch 毫秒）；返回写入的事件。
     pub fn append(&self, data: SessionEventData) -> SessionEvent {
         self.append_at(data, now_ms())
