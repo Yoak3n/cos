@@ -32,17 +32,35 @@ struct Inner {
 #[derive(Clone)]
 pub struct Session {
     id: String,
+    /// 会话创建时间（Unix epoch 毫秒）。
+    ///
+    /// 这是**会话自带的元数据**，不是保存方该凭空造的东西：收尾落盘（`finish_with`）
+    /// 是覆盖式重写，若在这里丢了创建时间，日志头就会在第一次收尾后变成 0，
+    /// 而且每次重写都再丢一次——嵌入方只能自己重读旧 header 兜回来。
+    created_at_ms: u64,
     inner: Arc<Mutex<Inner>>,
 }
 
 impl Session {
-    /// 新建空会话（seq 从 1 起，游标在主干）。
+    /// 新建空会话（seq 从 1 起，游标在主干，创建时间取当前）。
     pub fn new(id: impl Into<String>) -> Self {
-        Self::from_events(id, Vec::new())
+        Self::from_events_at(id, Vec::new(), now_ms())
     }
 
     /// 从既有事件恢复（重载/回放）；`next_seq = max(seq) + 1`，游标回到主干。
+    ///
+    /// 创建时间取当前——**从日志恢复请用 [`Session::from_events_at`]**，
+    /// 把原 header 的创建时间带回来，否则下一次重写就把它冲掉了。
     pub fn from_events(id: impl Into<String>, events: Vec<SessionEvent>) -> Self {
+        Self::from_events_at(id, events, now_ms())
+    }
+
+    /// 从既有事件 + 创建时间恢复（`load_jsonl` 读出的 header 直接喂进来）。
+    pub fn from_events_at(
+        id: impl Into<String>,
+        events: Vec<SessionEvent>,
+        created_at_ms: u64,
+    ) -> Self {
         let next_seq = events.iter().map(|event| event.seq).max().unwrap_or(0) + 1;
         let next_branch = events
             .iter()
@@ -51,6 +69,7 @@ impl Session {
             + 1;
         Self {
             id: id.into(),
+            created_at_ms,
             inner: Arc::new(Mutex::new(Inner {
                 events,
                 next_seq,
@@ -63,6 +82,11 @@ impl Session {
     /// 会话 id。
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// 会话创建时间（Unix epoch 毫秒）。
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
     }
 
     /// 全部事件快照（追加顺序）。

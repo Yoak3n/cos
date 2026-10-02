@@ -403,10 +403,11 @@ pub async fn finish_with(
 
     // 持久化 + 重放校验（逐事件一致）
     if let Some(path) = &config.session_path {
+        // 创建时间取会话自带的：这是覆盖式重写，凭空造 0 会把日志头冲掉
         let header = SessionHeader {
             version: SESSION_FORMAT_VERSION,
             id: config.session_id.clone(),
-            created_at_ms: 0,
+            created_at_ms: agent.session().created_at_ms(),
             cwd: None,
         };
         save_jsonl(agent.session(), &header, path)?;

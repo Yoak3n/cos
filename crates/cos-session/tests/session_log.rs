@@ -217,3 +217,39 @@ fn events_after_returns_only_newer_events() {
     assert_eq!(session.events_after(9).len(), 1);
     assert_eq!(session.events_after(9)[0].seq, 10);
 }
+
+#[test]
+fn new_session_stamps_a_real_creation_time() {
+    assert!(Session::new("sess-1").created_at_ms() > 0);
+}
+
+/// 创建时间是会话自带的元数据：从 header 恢复要带回来，覆盖式重写不能冲掉。
+///
+/// 回归点：收尾落盘（`finish_with`）曾把 `created_at_ms` 写死 0，于是日志头在
+/// 第一次收尾后就变成 0，嵌入方只能自己重读旧 header 兜回来。
+#[test]
+fn creation_time_survives_restore_and_rewrite() {
+    let session = Session::from_events_at("sess-1", Vec::new(), 42);
+    assert_eq!(session.created_at_ms(), 42);
+
+    let header = SessionHeader {
+        version: SESSION_FORMAT_VERSION,
+        id: session.id().to_string(),
+        created_at_ms: session.created_at_ms(),
+        cwd: None,
+    };
+    let path = std::env::temp_dir().join(format!(
+        "cos-session-created-{}.jsonl",
+        std::process::id()
+    ));
+    save_jsonl(&session, &header, &path).unwrap();
+
+    let (loaded, events) = load_jsonl(&path).unwrap();
+    assert_eq!(loaded.created_at_ms, 42, "重写不该改创建时间");
+
+    // 从日志恢复：带上原创建时间，再存一次仍是 42
+    let restored = Session::from_events_at(loaded.id.clone(), events, loaded.created_at_ms);
+    assert_eq!(restored.created_at_ms(), 42);
+
+    let _ = std::fs::remove_file(&path);
+}

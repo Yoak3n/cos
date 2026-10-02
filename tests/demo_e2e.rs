@@ -112,6 +112,10 @@ async fn demo_end_to_end_snapshot_invariants_replay_unload() {
     // 5. JSONL 落盘（重放一致性已由 run 内部校验；行数 = header + 16 事件）
     let text = std::fs::read_to_string(&session_path).unwrap();
     assert_eq!(text.lines().count(), 17);
+    // header 的创建时间是真的（回归点：收尾落盘曾把它写死 0）
+    let (header, _) = cos_session::load_jsonl(&session_path).unwrap();
+    assert!(header.created_at_ms > 0, "收尾落盘不该把创建时间冲成 0");
+    assert_eq!(header.id, "demo-e2e");
 
     server.join().await;
 }
