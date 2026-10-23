@@ -1,7 +1,7 @@
 /**
  * @cos/tools — tool registry (`ctx.tools`): named executors the loop
- * schedules after the model requests calls. A real deployment replaces this
- * with guarded pipeline events (`tools/pre-execute` …).
+ * schedules after the model requests calls, gated by the `tools/pre-execute`
+ * waterfall (veto = refuse one call without running it).
  * @module @cos/tools
  */
 
@@ -67,9 +67,31 @@ interface Entry {
   dsh?: DshToolDefinition
 }
 
+/** Result of a `tools/pre-execute` veto: the refusal surfaced as the tool result. */
+export interface ToolVeto {
+  veto: string
+}
+
 declare module 'cordis' {
   interface Context {
     tools: ToolsService
+  }
+  interface Events {
+    /**
+     * Execution gate before one registered tool runs. Participants may veto
+     * the call by returning a reason **without** calling `next` (the engine
+     * skips the executor and surfaces the reason as the tool result); calling
+     * `next` lets the call proceed. Sandboxing, quotas, and visitor modes
+     * gate here.
+     * @param payload - the pending call (name/args/signal; read-only contract).
+     * @param next - continue with the registered executor.
+     * @mode waterfall
+     */
+    'tools/pre-execute'(
+      this: ToolsService,
+      payload: { name: string; args: unknown; signal: AbortSignal },
+      next: () => Promise<ToolVeto | undefined>,
+    ): Promise<ToolVeto | undefined>
   }
 }
 
@@ -172,10 +194,19 @@ export class ToolsService extends Service {
     return [...this.registry.entries()].map(([name, entry]) => ({ name, schema: entry.schema }))
   }
 
-  execute(name: string, args: unknown, signal: AbortSignal): Promise<ToolResult> {
+  async execute(name: string, args: unknown, signal: AbortSignal): Promise<ToolResult> {
     const entry = this.registry.get(name)
     if (entry === undefined) {
-      return Promise.resolve({ content: `unknown tool: ${name}`, isError: true })
+      return { content: `unknown tool: ${name}`, isError: true }
+    }
+    const gate = await this.ctx.waterfall(
+      this,
+      'tools/pre-execute',
+      { name, args, signal },
+      () => Promise.resolve(undefined),
+    )
+    if (gate?.veto) {
+      return { content: gate.veto, isError: true }
     }
     return Promise.resolve(entry.executor(args, signal)).catch((error: unknown) => ({
       // 保留 Error.message（含工具给出的下一步指引），避免 String(error) 变成 "Error: ..."

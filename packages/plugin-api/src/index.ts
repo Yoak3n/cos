@@ -94,7 +94,7 @@ export interface PluginConfigDecl {
   title?: string
   fields: readonly PluginConfigField[]
 }
-export type { ToolExecutor, ToolOptions, ToolResult } from '../../tools/src/index.ts'
+export type { ToolExecutor, ToolOptions, ToolResult, ToolVeto } from '../../tools/src/index.ts'
 export { dshToolExecutor } from '../../tools/src/index.ts'
 export type { DshToolDefinition } from '../../tools/src/index.ts'
 
