@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "build:sea": "node scripts/build-sea.mjs",
     "scaffold": "tsx scripts/scaffold.ts",
-    "test": "node --import tsx --test packages/boot/src/error-guard.test.ts packages/boot/src/seed.test.ts packages/session/src/trim.test.ts"
+    "test": "node --import tsx --test packages/boot/src/error-guard.test.ts packages/boot/src/seed.test.ts packages/session/src/trim.test.ts packages/llm-retry/src/retry.test.ts packages/llm-retry/src/retry.e2e.test.ts"
   },
   "dependencies": {
     "@cordisjs/plugin-hmr": "^1.0.15",
@@ -22,6 +22,7 @@
     "@cos/credentials": "workspace:*",
     "@cos/llm": "workspace:*",
     "@cos/llm-deepseek": "workspace:*",
+    "@cos/llm-retry": "workspace:*",
     "@cos/mock-llm": "workspace:*",
     "@cos/persistence": "workspace:*",
     "@cos/persona": "workspace:*",

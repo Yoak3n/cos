@@ -41,6 +41,9 @@ importers:
       '@cos/llm-deepseek':
         specifier: workspace:*
         version: link:packages/llm-deepseek
+      '@cos/llm-retry':
+        specifier: workspace:*
+        version: link:packages/llm-retry
       '@cos/mock-llm':
         specifier: workspace:*
         version: link:packages/mock-llm
@@ -264,6 +267,15 @@ importers:
       '@cos/llm':
         specifier: workspace:*
         version: link:../llm
+      '@cos/types':
+        specifier: workspace:*
+        version: link:../types
+      cordis:
+        specifier: 4.0.0-rc.7
+        version: 4.0.0-rc.7(@cordisjs/plugin-include@1.0.4)(@cordisjs/plugin-loader@1.0.0-rc.5)
+
+  packages/llm-retry:
+    dependencies:
       '@cos/types':
         specifier: workspace:*
         version: link:../types

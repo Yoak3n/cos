@@ -14,6 +14,7 @@ bundles/               # 组合层目录（非工作区包，用 --bundles 显�
 packages/              # 所有 @cos/* 工作区插件包
   boot/                #   启动装配、补丁/覆盖层、fail-loud
   llm/  llm-deepseek/  #   适配器注册表 + DeepSeek 真实适配器（默认）
+  llm-retry/           #   瞬时请求失败（网络/断流/408/429/5xx）指数退避重试
   mock-llm/            #   本地 mock（可选，离线调试）
   credentials/         #   凭据（读取 secrets.yml）
   session/ persistence/ agent-loop/ tools/ types/

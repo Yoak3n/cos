@@ -44,6 +44,14 @@
   name: '@cos/agent-loop'
   config:
     debugSystemPrompt: false
+# 瞬时请求失败（网络层 / 断流 / HTTP 408/429/5xx）的指数退避重试；
+# retries: 0 可整体关闭。
+- id: llm-retry
+  name: '@cos/llm-retry'
+  config:
+    retries: 3
+    baseDelayMs: 500
+    maxDelayMs: 8000
 - id: subagents
   name: '@cos/subagents'
   config:
