@@ -9,6 +9,9 @@
  *   old    —— 更早的历史：紧上限，超预算按整轮从最旧丢弃。
  * 预算丢弃绝不进入 recent 窗口：排查类任务一轮可达数十步，把窗口内旧步骤裁掉
  * 会让模型失忆重查（步数暴涨）；窗口整体超预算时交由模型上下文窗口兜底。
+ *
+ * 图片块：只有最新一条 user 消息保留原图（本轮要看）；更早 user 轮的图片折叠成
+ * 占位文本——base64 体积大，历史轮每请求重复上传只烧 token 不再带来信息。
  */
 import type { MessageContent, ModelMessage } from '@cos/types'
 
@@ -24,6 +27,24 @@ export const MAX_TEXT_BLOCK_CHARS = 4000
 export const MAX_WIRE_CHARS = 100_000
 /** 保留窗口覆盖的最近 user 轮数（含当前轮）。 */
 export const KEEP_RECENT_TURNS = 3
+
+/** 旧 user 轮图片块的替换占位（模型仍能知道这里曾有一张图）。 */
+export const IMAGE_OMITTED_PLACEHOLDER = '[图片已省略]'
+
+/** 最新一条 user 消息的下标；没有 user 消息时为 -1。 */
+function lastUserIndex(messages: ModelMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') return i
+  }
+  return -1
+}
+
+/** 旧 user 轮的图片块 → 占位文本块（位置保留，块序不变）。 */
+function collapseImages(content: MessageContent): MessageContent {
+  return content.map((block) =>
+    block.type === 'image' ? { type: 'text' as const, text: IMAGE_OMITTED_PLACEHOLDER } : block,
+  )
+}
 
 function clipText(text: string, max: number): string {
   if (text.length <= max) return text
@@ -70,6 +91,7 @@ function recentWindowStart(messages: ModelMessage[]): number {
 export function trimForModel(messages: ModelMessage[]): ModelMessage[] {
   const freshStart = freshStartIndex(messages)
   const windowStart = recentWindowStart(messages)
+  const keepImagesFrom = lastUserIndex(messages)
   const trimmed = messages.map((m, i) => {
     const cap = m.role !== 'tool'
       ? MAX_TEXT_BLOCK_CHARS
@@ -78,7 +100,8 @@ export function trimForModel(messages: ModelMessage[]): ModelMessage[] {
         : i >= windowStart
           ? RECENT_TOOL_RESULT_CHARS
           : MAX_TOOL_RESULT_CHARS
-    return { ...m, content: clipContent(m.content, cap) }
+    const content = m.role === 'user' && i < keepImagesFrom ? collapseImages(m.content) : m.content
+    return { ...m, content: clipContent(content, cap) }
   })
   const sizes = trimmed.map((m) => contentChars(m.content))
   let total = sizes.reduce((a, b) => a + b, 0)

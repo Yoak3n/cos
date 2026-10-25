@@ -135,3 +135,34 @@ test(`history within ${KEEP_RECENT_TURNS} turns is never dropped even over budge
   assertClipped(trimmed[2]!, RECENT_TOOL_RESULT_CHARS)
   assertIntact(trimmed[8]!, 40_000)
 })
+
+const userWithImage = (text: string): ModelMessage => ({
+  role: 'user',
+  content: [{ type: 'image', mime: 'image/png', data: 'aGk=' }, { type: 'text', text }],
+})
+
+test('old user-turn images collapse to placeholders; the latest user message keeps them', () => {
+  const messages = [
+    userWithImage('第一轮带图'),
+    assistant('收到'),
+    userWithImage('第二轮带图'),
+    assistant('收到2'),
+  ]
+  const trimmed = trimForModel(messages)
+  assert.deepEqual(trimmed[0]!.content, [
+    { type: 'text', text: '[图片已省略]' },
+    { type: 'text', text: '第一轮带图' },
+  ])
+  assert.deepEqual(trimmed[2]!.content, [
+    { type: 'image', mime: 'image/png', data: 'aGk=' },
+    { type: 'text', text: '第二轮带图' },
+  ])
+})
+
+test('single user message keeps its image (first sight must be full)', () => {
+  const trimmed = trimForModel([userWithImage('看这张'), assistant('好的')])
+  assert.deepEqual(trimmed[0]!.content, [
+    { type: 'image', mime: 'image/png', data: 'aGk=' },
+    { type: 'text', text: '看这张' },
+  ])
+})
