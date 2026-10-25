@@ -45,15 +45,23 @@ export interface Scope {
   dispose(): Promise<void>
 }
 
-/** Shared no-op plugin used as the backing scope fiber. */
-function scope(): void {}
-
 /**
  * Mint a scope under `ctx`: the scoped context inherits the dependency API and
  * carries the `kScope` tag used for event routing.
+ *
+ * `inject` mirrors the owning plugin's service dependencies. cordis 4.0 rc12
+ * enforces `inject` on derived fibers: without it, `scopeCtx.llm` throws
+ * `cannot get property "llm" without inject` even though the parent fiber
+ * declared it.
  */
-export function createScope(ctx: ContextType, key: ScopeKey): Scope {
-  const fiber = ctx.plugin(scope)
+export function createScope(
+  ctx: ContextType,
+  key: ScopeKey,
+  inject: readonly string[] = [],
+): Scope {
+  const backing = (): void => {}
+  if (inject.length > 0) Object.assign(backing, { inject })
+  const fiber = ctx.plugin(backing)
   const scoped: ContextType = fiber.ctx.extend({ [kScope]: key })
   let disposing: Promise<void> | undefined
   return {

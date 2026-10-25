@@ -11,6 +11,6 @@
     "@cos/scope": "workspace:*",
     "@cos/system-prompt": "workspace:*",
     "@cos/types": "workspace:*",
-    "cordis": "4.0.0-rc.7"
+    "cordis": "4.0.0-rc.12"
   }
 }

@@ -99,7 +99,7 @@ export class LoopAgent implements Agent {
     maxSteps: number = DEFAULT_MAX_STEPS,
     debugPrompt = false,
   ) {
-    this.scope = createScope(loopCtx, this)
+    this.scope = createScope(loopCtx, this, AgentLoop.inject)
     this.ctx = this.scope.ctx.extend({ agent: this })
     this.carrier = scopeTarget(this, this)
     this.options = { ...options }
