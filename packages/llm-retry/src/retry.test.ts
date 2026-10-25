@@ -100,9 +100,16 @@ test('apply：不可重试失败与已取消信号直接终局', async () => {
   assert.equal(await decide(undiciFailure('ECONNRESET'), aborted.signal), undefined)
 })
 
-test('apply：retries: 0 不注册监听（关闭重试）', () => {
-  let registered = false
-  const fakeCtx = { on: () => { registered = true; return () => {} } } as unknown as Context
+test('apply：retries: 0 只关退避监听（图片降级仍注册）', () => {
+  const events: string[] = []
+  const fakeCtx = { on: (name: string) => { events.push(name); return () => {} } } as unknown as Context
   apply(fakeCtx, { retries: 0 })
-  assert.equal(registered, false)
+  assert.deepEqual(events, ['llm/stream'])
+})
+
+test('apply：retries>0 时退避与降级监听都注册', () => {
+  const events: string[] = []
+  const fakeCtx = { on: (name: string) => { events.push(name); return () => {} } } as unknown as Context
+  apply(fakeCtx, { retries: 3 })
+  assert.deepEqual(events, ['llm/stream', 'agent/request-error'])
 })
