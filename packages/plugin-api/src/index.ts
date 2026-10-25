@@ -86,6 +86,12 @@ export interface PluginConfigField {
   secret?: boolean
   required?: boolean
   description?: string
+  /**
+   * Optional display group. Fields sharing a section render together; the group
+   * order follows first appearance. Rendering stays product-side — the engine
+   * only carries the label.
+   */
+  section?: string
   options?: Array<{ value: string; label: string }>
   default?: string | number | boolean
 }
