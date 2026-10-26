@@ -12,6 +12,8 @@
  * @module @cos/persistence/codec
  */
 
+import { randomUUID } from 'node:crypto'
+
 import type { FinishReason, SessionEvent, SessionEventMap, SessionId, TokenUsage } from '@cos/types'
 
 /** 通用事件流中受支持的一行（.pi/agent 风格）。 */
@@ -30,10 +32,6 @@ const STANDARD_TYPES = new Set(['session', 'message', 'model_change', 'thinking_
 export function isStandardLine(raw: string): boolean {
   const match = /^\{?\s*"type"\s*:\s*"([a-z_]+)"/.exec(raw)
   return match !== null && STANDARD_TYPES.has(match[1])
-}
-
-function hexId(seq: number): string {
-  return seq.toString(16).padStart(8, '0')
 }
 
 function iso(ms: number): string {
@@ -107,6 +105,18 @@ export class StandardWriter {
     this.lastId = tailId
   }
 
+  /**
+   * 分配一条落盘消息 id：随机 UUID。
+   *
+   * 不用内存 `event.seq`——resume 后它只按已落盘消息条数重新起算，拿它当
+   * 持久化 id 会跨重启撞号；也不用递增计数器——省掉段尾续号与全文件最大
+   * id 扫描这类有状态、易错的维护。id / parentId 都是不透明字符串（session
+   * 头 id 本就不是 hex），历史顺序由行序与 timestamp 决定，与 id 数值无关。
+   */
+  private assignId(): string {
+    return randomUUID()
+  }
+
   /** 新文件/新段的 header 行（type=session）。 */
   header(id: SessionId, meta: { cwd?: string } = {}): string {
     const line: StandardEvent = {
@@ -168,7 +178,7 @@ export class StandardWriter {
         if (content.length === 0) content.push({ type: 'text', text: textOf(data.content) })
         const line: StandardEvent = {
           type: 'message',
-          id: hexId(event.seq),
+          id: this.assignId(),
           parentId: parent,
           timestamp: iso(event.time),
           message: {
@@ -204,7 +214,7 @@ export class StandardWriter {
         }
         const line: StandardEvent = {
           type: 'message',
-          id: hexId(event.seq),
+          id: this.assignId(),
           parentId: this.lastId,
           timestamp: iso(event.time),
           message,
@@ -237,7 +247,7 @@ export class StandardWriter {
         }
         const line: StandardEvent = {
           type: 'message',
-          id: hexId(event.seq),
+          id: this.assignId(),
           parentId: parent,
           timestamp: iso(event.time),
           message: {
