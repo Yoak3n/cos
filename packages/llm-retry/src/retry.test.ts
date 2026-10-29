@@ -42,6 +42,23 @@ test('isTransientFailure：HTTP 408/429/5xx 可重试，其余 PROVIDER_ERROR �
   assert.equal(isTransientFailure(new LlmError('PROVIDER_ERROR', 'custom provider x: 未配置 API Base URL（设置面板填写）')), false)
 })
 
+test('isTransientFailure：网关把上游故障包成 400 + server_error 时仍可重试', () => {
+  const wrapped = 'opencode-go request failed: 400 {"error":{"type":"server_error","code":"server_error",'
+    + '"message":"Upstream request failed: [server_error] Upstream response was not valid JSON"}}'
+  assert.equal(isTransientFailure(new LlmError('PROVIDER_ERROR', wrapped)), true)
+  const invalid = 'gateway request failed: 400 {"error":{"type":"invalid_request_error","message":"bad tools schema"}}'
+  assert.equal(isTransientFailure(new LlmError('PROVIDER_ERROR', invalid)), false)
+})
+
+test('isTransientFailure：跨模块副本的 PROVIDER_ERROR 按鸭子类型判（不依赖 instanceof）', () => {
+  // 同一引擎可能同时装有挂载版与安装版 @cos 模块，LlmError 的类身份不相等；
+  // 插件边界上拿到的可能只是同形对象。
+  const foreign = (message: string) => Object.assign(new Error(message), { code: 'PROVIDER_ERROR' })
+  assert.equal(isTransientFailure(foreign('graph request failed: 503 upstream unavailable')), true)
+  assert.equal(isTransientFailure(foreign('graph request failed: 400 {"error":{"type":"server_error"}}')), true)
+  assert.equal(isTransientFailure(foreign('graph request failed: 401 unauthorized')), false)
+})
+
 test('isTransientFailure：域错误与取消永不重试', () => {
   assert.equal(isTransientFailure(new LlmError('NO_ADAPTER', 'no adapter registered for provider "x"')), false)
   assert.equal(isTransientFailure(new LlmError('INVALID_STREAM', 'text-delta without open block 0')), false)
