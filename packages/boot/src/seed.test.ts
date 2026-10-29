@@ -185,12 +185,21 @@ test('linkWorkspaceDeps：工作区解析链 junction（用户副本可被该 sc
       `process.stdout.write(require('node:module').createRequire(${JSON.stringify(parent)}).resolve(${JSON.stringify(spec)}))`,
     ], { encoding: 'utf8' })
   assert.equal(resolveFresh(join(work, 'memory', 'src', 'index.ts'), 'fake-dep-b'), join(nmBase2, 'fake-dep-b.js'))
+  // 5b) 旧目标仍存在（dev 构建目录没删）也必须重指到当前安装：否则工作区会继续
+  //     加载旧引擎的 @cos 副本，跨副本类身份/单例判断失效
+  const nmBase3 = join(root, 'sidecar-c', 'node_modules')
+  mkdirSync(nmBase3, { recursive: true })
+  writeFileSync(join(nmBase3, 'fake-dep-c.js'), '// vendor C')
+  const rebuiltAgain = linkWorkspaceDeps(work, nmBase3, SCOPE)
+  assert.ok(rebuiltAgain.includes(join(root, 'cos', 'node_modules')), '指向存活旧安装的基座链接也应重指')
+  assert.equal(realpathSync(join(root, 'cos', 'node_modules')), realpathSync(nmBase3))
+  assert.equal(resolveFresh(join(work, 'memory', 'src', 'index.ts'), 'fake-dep-c'), join(nmBase3, 'fake-dep-c.js'))
   // 6) scope 链接目标被删后重建（同路径重播种）自动愈合，解析恢复
   rmSync(join(work, 'native-bridge'), { recursive: true, force: true })
   mkdirSync(join(work, 'native-bridge'), { recursive: true })
   writeFileSync(join(work, 'native-bridge', 'index.ts'), 'nb2')
   writeFileSync(join(work, 'native-bridge', 'package.json'), `{"name":"${SCOPE}/native-bridge","type":"module","main":"index.ts"}`)
-  linkWorkspaceDeps(work, nmBase2, SCOPE)
+  linkWorkspaceDeps(work, nmBase3, SCOPE)
   assert.equal(realpathSync(join(work, 'node_modules', SCOPE, 'native-bridge')), realpathSync(join(work, 'native-bridge')))
   assert.equal(resolveFresh(join(work, 'memory', 'src', 'index.ts'), `${SCOPE}/native-bridge`), join(work, 'native-bridge', 'index.ts'))
 })

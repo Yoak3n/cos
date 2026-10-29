@@ -11,7 +11,8 @@
  * @module @cos/boot/seed
  */
 import {
-  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
+  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync,
+  writeFileSync,
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import {
@@ -69,19 +70,28 @@ const linkType = process.platform === 'win32' ? 'junction' : 'dir'
 
 /**
  * 建立目录链接（junction）：已有可用实体（含用户真实目录）不动；**悬空链接先清再建**
- * （卸载后重装到不同路径、用户删过插件目录等场景会留下悬空）；目标缺失不建。
+ * （卸载后重装到不同路径、用户删过插件目录等场景会留下悬空）；**指向旧安装的链接
+ * 也重建**（本地 dev 构建切到打包运行时，旧路径仍存在，不重建会让工作区继续加载
+ * 另一份引擎副本，跨副本的类身份与单例判断全部失效）；目标缺失不建。
  * 返回是否新建。
  */
 function ensureLink(target: string, linkPath: string): boolean {
+  let existing: ReturnType<typeof lstatSync> | undefined
   try {
-    lstatSync(linkPath)
-    try {
-      statSync(linkPath) // 悬空链接：lstat 成功而 stat 抛
-      return false
-    } catch {
-      rmSync(linkPath, { force: true })
-    }
+    existing = lstatSync(linkPath)
   } catch { /* 不存在 → 直接建 */ }
+  if (existing !== undefined) {
+    // 真实目录/文件是用户的，不动。
+    if (!existing.isSymbolicLink()) return false
+    let upToDate = false
+    if (existsSync(target)) {
+      try {
+        upToDate = realpathSync(linkPath) === realpathSync(target)
+      } catch { /* 悬空链接 */ }
+    }
+    if (upToDate) return false
+    rmSync(linkPath, { force: true })
+  }
   if (!existsSync(target)) return false
   mkdirSync(dirname(linkPath), { recursive: true })
   symlinkSync(resolve(target), linkPath, linkType)
